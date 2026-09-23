@@ -1,0 +1,8 @@
+# Ignore temporary and state cache files
+config/.birdframe/state.json
+config/.birdframe/.render.lock
+config/.birdframe/shot.png
+config/.birdframe/test_bg.png
+*.tmp
+*.log
+.DS_Store

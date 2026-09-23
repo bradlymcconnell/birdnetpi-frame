@@ -1,0 +1,15 @@
+[Unit]
+Description=AvianVisitors e-ink frame update
+Documentation=https://github.com/Twarner491/AvianVisitors
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# install.sh rewrites User= and the paths to match your install.
+Type=oneshot
+User=birder
+WorkingDirectory=/home/birder/AvianVisitors/frame
+ExecStart=/home/birder/AvianVisitors/frame/.venv/bin/python /home/birder/AvianVisitors/frame/display.py --config /home/birder/.birdframe/config.toml
+Environment=PYTHONUNBUFFERED=1
+Nice=10
+TimeoutStartSec=300

@@ -1,0 +1,14 @@
+base_url = "http://192.168.1.71"
+panel = "el133uf1"
+shoot = true
+hours = "today"
+shoot_subtitle = "Heard Today"
+shoot_mat = 0.00
+mat = -0.10
+opening = 0.95
+shoot_small_floor = 0.15
+shoot_count_exp = 0.22
+saturation = 0.95
+background = ""
+bird_names = true
+rotate = 90
