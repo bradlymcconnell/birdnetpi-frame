@@ -76,11 +76,19 @@ The 13.3" Spectra 6 panel drives its $1600 \times 1200$ resolution in two $600 \
 
 ---
 
-## Installation & Disaster Recovery (From Scratch)
+## Quick Installation & Disaster Recovery (From Scratch)
 
-### 1. Initial Setup on Pi Zero 2 W
-1. Flash **Raspberry Pi OS Lite (64-bit)** using Raspberry Pi Imager.
-2. Connect to the Pi via SSH:
+### Option A: One-Line Automated Installer (Recommended)
+After flashing a fresh Raspberry Pi OS and running the initial AvianVisitors setup, run this single command to apply all patches, install fonts, deploy configs, and enable systemd timers:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/bradlymcconnell/birdnetpi-frame/main/install.sh | bash
+```
+
+---
+
+### Option B: Manual Git Clone & Setup
+1. **Initial setup on Pi Zero 2 W:**
    ```bash
    ssh birder@birdnetframe1.local
    sudo apt update && sudo apt install -y git python3-pip python3-venv
@@ -88,25 +96,10 @@ The 13.3" Spectra 6 panel drives its $1600 \times 1200$ resolution in two $600 \
    cd AvianVisitors/frame && ./install.sh
    ```
 
-### 2. Apply Custom Configuration & Patches
-1. Copy configuration and scripts from this repository:
+2. **Deploy custom patches from this repository:**
    ```bash
-   mkdir -p ~/.birdframe ~/.local/share/fonts
-   cp config/.birdframe/config.toml ~/.birdframe/
-   cp fonts/Caveat.ttf ~/.local/share/fonts/
-   sudo fc-cache -fv
-   cp scripts/patch-frame.sh /home/birder/
-   chmod +x /home/birder/patch-frame.sh
-   ```
-2. Run the master re-patch script:
-   ```bash
-   /home/birder/patch-frame.sh
-   ```
-3. Update boot config:
-   ```bash
-   sudo cp boot/config.txt /boot/firmware/config.txt
-   sudo cp boot/hosts /etc/hosts
-   sudo reboot
+   git clone https://github.com/bradlymcconnell/birdnetpi-frame.git
+   cd birdnetpi-frame && ./install.sh
    ```
 
 ---
