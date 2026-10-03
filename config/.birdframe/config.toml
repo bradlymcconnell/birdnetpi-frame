@@ -12,3 +12,5 @@ saturation = 0.95
 background = ""
 bird_names = true
 rotate = 90
+style = "cartoon"
+font = "auto"

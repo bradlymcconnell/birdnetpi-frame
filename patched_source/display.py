@@ -385,7 +385,35 @@ def obtain_image(cfg, species=None):
         if species is None:
             species = fetch_species(cfg, _auth(cfg))
         window_hours = _resolve_hours(cfg.get("hours", 24))
+        style = str(cfg.get("style", cfg.get("art_style", "sketch"))).lower()
+        
+        cutout_local = "/home/birder/AvianVisitors/frame/assets/cartoon" if style == "cartoon" else None
+        
+        font_cfg = str(cfg.get("font", "auto")).lower()
+        font_map = {
+            "crayon": "/home/birder/.local/share/fonts/FingerPaint-Regular.ttf",
+            "fingerpaint": "/home/birder/.local/share/fonts/FingerPaint-Regular.ttf",
+            "gloria": "/home/birder/.local/share/fonts/GloriaHallelujah-Regular.ttf",
+            "gloriahallelujah": "/home/birder/.local/share/fonts/GloriaHallelujah-Regular.ttf",
+            "gochi": "/home/birder/.local/share/fonts/GochiHand-Regular.ttf",
+            "gochihand": "/home/birder/.local/share/fonts/GochiHand-Regular.ttf",
+            "patrick": "/home/birder/.local/share/fonts/PatrickHand-Regular.ttf",
+            "patrickhand": "/home/birder/.local/share/fonts/PatrickHand-Regular.ttf",
+            "angrybirds": "/home/birder/.local/share/fonts/LuckiestGuy-Regular.ttf",
+            "luckiestguy": "/home/birder/.local/share/fonts/LuckiestGuy-Regular.ttf",
+            "comic": "/home/birder/.local/share/fonts/LuckiestGuy-Regular.ttf",
+            "caveat": "/home/birder/.local/share/fonts/Caveat.ttf",
+            "sketch": "/home/birder/.local/share/fonts/Caveat.ttf"
+        }
+        if font_cfg in font_map:
+            font_path = font_map[font_cfg]
+        elif style == "cartoon":
+            font_path = "/home/birder/.local/share/fonts/FingerPaint-Regular.ttf"
+        else:
+            font_path = "/home/birder/.local/share/fonts/Caveat.ttf"
+            
         shoot(cfg["base_url"], out, title=cfg["shoot_title"], subtitle=cfg["shoot_subtitle"],
+              cutout_local=cutout_local, font_path=font_path,
               headline_px=cfg["shoot_headline_px"], eyebrow_px=cfg["shoot_eyebrow_px"],
               lowercase=cfg["shoot_lowercase"], mat=cfg["shoot_mat"],
               small_floor=cfg["shoot_small_floor"], count_exp=cfg["shoot_count_exp"], timeout_ms=cfg["timeout"] * 1000,

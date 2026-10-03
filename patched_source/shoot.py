@@ -144,14 +144,24 @@ def _make_cutout_handler(base, local_dir=None):
     def handler(route):
         try:
             params = urllib.parse.parse_qs(urllib.parse.urlparse(route.request.url).query)
-            slug = re.sub(r"[^a-z0-9]+", "-", (params.get("sci") or [""])[0].lower()).strip("-")
-            if (params.get("pose") or ["1"])[0] == "2":
-                slug += "-2"
+            base_slug = re.sub(r"[^a-z0-9]+", "-", (params.get("sci") or [""])[0].lower()).strip("-")
+            pose = (params.get("pose") or ["1"])[0]
             if local_dir:
-                local = os.path.join(local_dir, slug + ".png")
-                if os.path.isfile(local):
-                    return route.fulfill(path=local)
-            route.fulfill(status=302, headers={"location": base + slug + ".png"})
+                if pose == "2":
+                    p2 = os.path.join(local_dir, f"{base_slug}-2.png")
+                    if os.path.isfile(p2):
+                        return route.fulfill(path=p2)
+                p1 = os.path.join(local_dir, f"{base_slug}.png")
+                if os.path.isfile(p1):
+                    return route.fulfill(path=p1)
+                fallback = os.path.join(local_dir, "default.png")
+                if os.path.isfile(fallback):
+                    return route.fulfill(path=fallback)
+            slug = f"{base_slug}-2" if pose == "2" else base_slug
+            if base:
+                route.fulfill(status=302, headers={"location": base + slug + ".png"})
+            else:
+                route.continue_()
         except Exception:
             _safe_continue(route)
     return handler
@@ -183,7 +193,7 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
           mat=0.04, collage_vh=72, cluster_xbias=1.0, cluster_ybias=1.2,
           count_exp=0.22, cluster_pad=0, label_min_px=11, small_floor=0.15, window_hours=None,
           timeout_ms=45000, user=None, password=None, species=None, cutout_base=None,
-          cutout_local=None, empty_text="listening for birds…", bird_names=False):
+          cutout_local=None, font_path=None, empty_text="listening for birds…", bird_names=False):
     pad_side, pad_top, pad_bottom = int(vw * mat), int(vh * mat * 0.92), int(vh * mat)
     auth = "Basic " + base64.b64encode(f"{user}:{password or ''}".encode()).decode() if user else None
 
@@ -200,23 +210,22 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
             page = browser.new_context(**ctx_kw).new_page()
             misses = []
             
-            page.route("**/*Caveat.ttf*", lambda route: route.fulfill(
-                path="/home/birder/.local/share/fonts/Caveat.ttf",
-                content_type="font/ttf"
-            ))
+            chosen_font = font_path if (font_path and os.path.isfile(font_path)) else "/home/birder/.local/share/fonts/Caveat.ttf"
+            if os.path.isfile(chosen_font):
+                page.route("**/*Caveat.ttf*", lambda route: route.fulfill(
+                    path=chosen_font,
+                    content_type="font/ttf"
+                ))
+                page.route("**/avian/frontend/fonts/Caveat.ttf*", lambda route: route.fulfill(
+                    path=chosen_font,
+                    content_type="font/ttf"
+                ))
             page.route("**/birdnet-api.php**", _make_api_handler(small_floor, window_hours, auth, species))
             page.route("**/apt.js*", _make_js_handler(
                 cluster_xbias, cluster_ybias, count_exp, cluster_pad,
                 label_min_px, auth, misses))
-            if bird_names:
-                hand_font = os.path.realpath(os.path.join(
-                    os.path.dirname(__file__), "..", "avian", "frontend", "fonts", "Caveat.ttf"))
-                if not os.path.isfile(hand_font):
-                    raise RuntimeError("collage label font is missing")
-                page.route("**/avian/frontend/fonts/Caveat.ttf*",
-                           lambda route: route.fulfill(path=hand_font))
-            if cutout_base:
-                page.route("**/cutout.php*", _make_cutout_handler(cutout_base, cutout_local))
+            if cutout_local:
+                page.route("**/cutout.php*", _make_cutout_handler(None, cutout_local))
 
             css = "@font-face { font-family: 'Hand'; src: local('Caveat'), local('Caveat SemiBold'), url('http://192.168.1.71/avian/frontend/fonts/Caveat.ttf') format('truetype'); font-weight: 600; } " + HIDE_CSS + _frame_css(headline_px, eyebrow_px, lowercase, pad_top, pad_side, pad_bottom, collage_vh)
             page.add_init_script(

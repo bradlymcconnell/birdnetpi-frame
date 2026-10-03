@@ -1,152 +1,106 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
-echo "=== Applying custom AvianVisitors Frame patches ==="
 
 FRAME_DIR="/home/birder/AvianVisitors/frame"
-VENV_LIB=$(find "$FRAME_DIR/.venv/lib" -name "site-packages" 2>/dev/null | head -n 1)
+VENV_DIR="$FRAME_DIR/.venv"
 
-# 1. Patch COLLAGE_FRAC for larger size (0.85) in display.py
-sed -i 's/COLLAGE_FRAC, GAP_FRAC = 0.065, [0-9.]*/COLLAGE_FRAC, GAP_FRAC = 0.065, 0.85/g' "$FRAME_DIR/display.py"
-echo "✓ Set COLLAGE_FRAC = 0.85"
+echo "=== 1. Ensuring Fonts are Installed Locally ==="
+mkdir -p /home/birder/.local/share/fonts
+if [ -d "$FRAME_DIR/fonts" ]; then
+  cp -r "$FRAME_DIR/fonts/"*.ttf /home/birder/.local/share/fonts/ 2>/dev/null || true
+fi
+fc-cache -fv /home/birder/.local/share/fonts 2>/dev/null || true
 
-# 2. Patch display.py (background engine, date rollover, today reset, species pass-through, vibrance boost, gc)
-python3 -c '
-file = "/home/birder/AvianVisitors/frame/display.py"
-with open(file, "r") as f:
+echo "=== 2. Patching Inky 13.3\" Driver (4KB SPI Chunking & 2.0s Power Delay) ==="
+INKY_DRIVER=$(find "$VENV_DIR" -name "inky_el133uf1.py" 2>/dev/null | head -n 1)
+if [ -n "$INKY_DRIVER" ]; then
+  python3 -c "
+import re
+with open('$INKY_DRIVER', 'r') as f:
     code = f.read()
 
-helper = """
-def _resolve_hours(hours_cfg):
-    if str(hours_cfg).lower() in ("today", "0", "day"):
-        return "today"
-    return max(1, int(hours_cfg))
+pattern = r'([ \t]*)self\._spi_bus\.xfer3\(data\)'
+replacement = r'''\1d = data.tolist() if hasattr(data, 'tolist') else list(data)
+\1for offset in range(0, len(d), 4096):
+\1    self._spi_bus.xfer3(d[offset:offset + 4096])'''
+if re.search(pattern, code):
+    code = re.sub(pattern, replacement, code)
 
-def _apply_background(img, bg_cfg):
-    if not bg_cfg:
-        return img
-    presets = {
-        "creme": (223, 213, 190),
-        "parchment": (223, 213, 190),
-        "grey": (204, 204, 204),
-        "gray": (204, 204, 204),
-    }
-    if isinstance(bg_cfg, str) and bg_cfg.lower() in presets:
-        target_color = presets[bg_cfg.lower()]
-    elif isinstance(bg_cfg, str) and bg_cfg.startswith("#"):
-        h = bg_cfg.lstrip("#")
-        target_color = tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-    elif isinstance(bg_cfg, (list, tuple)):
-        target_color = tuple(bg_cfg)
-    else:
-        return img
+code = code.replace('time.sleep(0.03)', 'time.sleep(0.2)')
+code = code.replace('self._send_command(EL133UF1_PON, CS_BOTH_SEL)\n        self._busy_wait(0.2)', 'self._send_command(EL133UF1_PON, CS_BOTH_SEL)\n        time.sleep(2.0)')
 
-    paper = _paper(img)
-    diff = ImageChops.difference(img, Image.new("RGB", img.size, paper)).convert("L")
-    mask = diff.point(lambda p: min(255, p * 4))
-    bg = Image.new("RGB", img.size, target_color)
-    return Image.composite(img, bg, mask)
-"""
-if "_resolve_hours" not in code:
-    code = code.replace("def fetch_recent(base, hours, timeout, auth=None):", helper + "\ndef fetch_recent(base, hours, timeout, auth=None):", 1)
-
-code = code.replace(
-    "return fetch_recent(cfg[\"base_url\"], cfg[\"hours\"], cfg[\"timeout\"], auth)",
-    "hours = _resolve_hours(cfg.get(\"hours\", 24))\n    return fetch_recent(cfg[\"base_url\"], hours, cfg[\"timeout\"], auth)",
-    1
-)
-code = code.replace(
-    "window_hours=cfg[\"hours\"],",
-    "window_hours=_resolve_hours(cfg.get(\"hours\", 24)),",
-    1
-)
-if "species=species" not in code:
-    code = code.replace(
-        "bird_names=cfg[\"bird_names\"])",
-        "bird_names=cfg[\"bird_names\"], species=species)",
-        1
-    )
-
-if "import gc" not in code:
-    code = code.replace(
-        "    try:\n        push_panel(img,",
-        "    import gc\n    gc.collect()\n    try:\n        push_panel(img,",
-        1
-    )
-
-if "ImageEnhance" not in code:
-    code = code.replace(
-        "        buf = buf.resize((dev.width, dev.height), Image.LANCZOS)",
-        "        buf = buf.resize((dev.width, dev.height), Image.LANCZOS)\n    from PIL import ImageEnhance\n    buf = ImageEnhance.Color(buf).enhance(1.4)\n    buf = ImageEnhance.Contrast(buf).enhance(1.15)",
-        1
-    )
-
-# Save last_date in save_state
-code = code.replace(
-    "json.dump({\"signature\": sig, \"last_refresh\": when}, f)",
-    "json.dump({\"signature\": sig, \"last_refresh\": when, \"last_date\": datetime.now().strftime(\"%Y-%m-%d\")}, f)"
-)
-
-# Date change check in run()
-target_check = "heal_due = now - state.get(\"last_refresh\", 0) >= cfg[\"heal_hours\"] * 3600\n    changed = (not use_signature) or (sig is not None and sig != state.get(\"signature\"))"
-replacement_check = "today_str = datetime.now().strftime(\"%Y-%m-%d\")\n    date_changed = (cfg.get(\"hours\") == \"today\") and (state.get(\"last_date\") != today_str)\n    heal_due = now - state.get(\"last_refresh\", 0) >= cfg[\"heal_hours\"] * 3600\n    changed = (not use_signature) or date_changed or (sig is not None and sig != state.get(\"signature\"))"
-code = code.replace(target_check, replacement_check)
-
-with open(file, "w") as f:
+with open('$INKY_DRIVER', 'w') as f:
     f.write(code)
-print("✓ Patched display.py successfully")
-'
-
-# 3. Patch shoot.py for robust label and tile rendering
-python3 -c '
-file = "/home/birder/AvianVisitors/frame/shoot.py"
-with open(file, "r") as f:
-    code = f.read()
-
-code = code.replace("if not n:", "if not n and \"LABEL_MIN_PX\" not in pat:")
-
-if "page.wait_for_selector(\".gtile\", state=\"attached\"" not in code:
-    code = code.replace(
-        "page.wait_for_selector(\".gtile, .empty\", state=\"attached\", timeout=timeout_ms)",
-        "try:\n                page.wait_for_selector(\".gtile\", state=\"attached\", timeout=30000)\n            except Exception:\n                page.wait_for_selector(\".empty\", state=\"attached\", timeout=timeout_ms)"
-    )
-
-code = code.replace(
-    "raise RuntimeError(\n                            \"frame labels missing for: \" + \", \".join(missing_labels))",
-    "print(\"some frame labels missing: \" + \", \".join(missing_labels), file=sys.stderr)"
-)
-
-with open(file, "w") as f:
-    f.write(code)
-print("✓ Patched shoot.py (label tolerance, tile selector)")
-'
-
-# 4. Patch inky_el133uf1.py for 4KB chunking
-INKY_FILE=$(find "$VENV_LIB" -name "inky_el133uf1.py" 2>/dev/null || true)
-if [ -f "$INKY_FILE" ]; then
-    python3 -c '
-import sys
-file = sys.argv[1]
-with open(file, "r") as f:
-    code = f.read()
-
-target = """            if data is not None:
-                self._gpio.set_value(self.dc_pin, Value.ACTIVE)
-                self._spi_bus.xfer3(data)"""
-
-replacement = """            if data is not None:
-                self._gpio.set_value(self.dc_pin, Value.ACTIVE)
-                d = data.tolist() if hasattr(data, "tolist") else list(data)
-                for offset in range(0, len(d), 4096):
-                    self._spi_bus.xfer3(d[offset:offset + 4096])"""
-
-if target in code:
-    code = code.replace(target, replacement, 1)
-    with open(file, "w") as f:
-        f.write(code)
-    print("✓ Patched inky_el133uf1.py for SPI DMA chunking")
-else:
-    print("✓ inky_el133uf1.py already patched or chunked")
-' "$INKY_FILE"
+print('Successfully patched inky_el133uf1.py!')
+"
 fi
 
-echo "=== All custom patches applied successfully! ==="
+echo "=== 3. Patching display.py (Daily Reset, Sizing, Clamping & Dual Art Styles) ==="
+DISPLAY_PY="$FRAME_DIR/display.py"
+python3 -c "
+with open('$DISPLAY_PY', 'r') as f:
+    code = f.read()
+
+if 'def _resolve_hours(' not in code:
+    helper = '''def _resolve_hours(hours_cfg):
+    if str(hours_cfg).lower() in ('today', '0', 'day'):
+        return max(1, datetime.now().hour + 1)
+    return int(hours_cfg)
+
+'''
+    code = code.replace('def slugify(sci):', helper + 'def slugify(sci):')
+
+code = code.replace('def _paper(img):\n    """Median of the four corners, robust to a stray inked corner."""\n    w, h = img.size\n    px = (img.getpixel(p) for p in ((4, 4), (w - 5, 4), (4, h - 5), (w - 5, h - 5)))\n    return tuple(int(statistics.median(c)) for c in zip(*px))', 'def _paper(img):\n    return (255, 255, 255)')
+code = code.replace('TITLE_H_FRAC, COLLAGE_FRAC, GAP_FRAC = 0.065, 0.66, 0.1', 'TITLE_H_FRAC, COLLAGE_FRAC, GAP_FRAC = 0.055, 0.96, 0.04')
+code = code.replace('TITLE_H_FRAC, COLLAGE_FRAC, GAP_FRAC = 0.065, 0.85, 0.06', 'TITLE_H_FRAC, COLLAGE_FRAC, GAP_FRAC = 0.055, 0.96, 0.04')
+
+if 'gc.collect()' not in code:
+    code = code.replace('def push_panel(img, rotate, saturation, panel=""):', 'def push_panel(img, rotate, saturation, panel=""):\n    import gc\n    gc.collect()')
+
+enhance_target = 'buf = buf.resize((dev.width, dev.height), Image.LANCZOS)'
+enhance_replace = '''buf = buf.resize((dev.width, dev.height), Image.LANCZOS)
+    import numpy as np
+    from PIL import ImageEnhance
+
+    arr = np.array(buf)
+    white_mask = (arr[:, :, 0] > 225) & (arr[:, :, 1] > 225) & (arr[:, :, 2] > 225)
+    arr[white_mask] = [255, 255, 255]
+    buf = Image.fromarray(arr)
+
+    buf = ImageEnhance.Color(buf).enhance(1.4)
+    buf = ImageEnhance.Contrast(buf).enhance(1.2)
+    buf = ImageEnhance.Sharpness(buf).enhance(1.3)'''
+
+if enhance_target in code and 'white_mask' not in code:
+    code = code.replace(enhance_target, enhance_replace)
+
+target_shoot = '''        window_hours = _resolve_hours(cfg.get("hours", 24))
+        shoot(cfg["base_url"], out, title=cfg["shoot_title"], subtitle=cfg["shoot_subtitle"],'''
+
+repl_shoot = '''        window_hours = _resolve_hours(cfg.get("hours", 24))
+        style = str(cfg.get("style", cfg.get("art_style", "sketch"))).lower()
+        cutout_local = "/home/birder/AvianVisitors/frame/assets/cartoon" if style == "cartoon" else None
+        shoot(cfg["base_url"], out, title=cfg["shoot_title"], subtitle=cfg["shoot_subtitle"],
+              cutout_local=cutout_local,'''
+
+if target_shoot in code:
+    code = code.replace(target_shoot, repl_shoot)
+
+with open('$DISPLAY_PY', 'w') as f:
+    f.write(code)
+print('Successfully patched display.py!')
+"
+
+echo "=== 4. Patching shoot.py (Route Interception, Font & Pose Fallback) ==="
+SHOOT_PY="$FRAME_DIR/shoot.py"
+python3 -c "
+with open('$SHOOT_PY', 'r') as f:
+    code = f.read()
+
+code = code.replace('if cutout_base:', 'if cutout_base or cutout_local:')
+
+with open('$SHOOT_PY', 'w') as f:
+    f.write(code)
+print('Successfully patched shoot.py!')
+"
+chmod +x /home/birder/patch-frame.sh

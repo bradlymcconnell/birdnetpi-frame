@@ -1,0 +1,15 @@
+[Unit]
+Description=BirdFrame Control API & Home Assistant Synchronizer
+After=network.target
+
+[Service]
+Type=simple
+User=birder
+WorkingDirectory=/home/birder
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/birder/AvianVisitors/frame/.venv/bin/python3 /home/birder/birdframe-api.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
