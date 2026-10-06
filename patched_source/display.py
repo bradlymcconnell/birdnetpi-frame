@@ -431,105 +431,11 @@ def _load_mask(slug, masks_dict):
 
 def _tuning(n):
     return {
-        "packingBudgetFrac": 0.46 if n <= 4 else (0.40 if n <= 12 else (0.34 if n <= 24 else 0.28)),
-        "countExp": 0.65,
-        "minTileAreaFrac": 0.0100 if n <= 8 else (0.0075 if n <= 20 else 0.0055),
-        "ellipseAspectBias": 2.1,
+        "packingBudgetFrac": 0.44 if n <= 4 else (0.38 if n <= 12 else (0.32 if n <= 24 else 0.26)),
+        "countExp": 0.45,
+        "minTileAreaFrac": 0.012 if n <= 8 else (0.008 if n <= 20 else 0.005),
+        "ellipseAspectBias": 1.2,
     }
-
-def _mask_pack(tiles, W, H, x_bias=1.0, y_bias=1.5, pad=3):
-    import numpy as np
-    GRID_STRIDE = 6
-    GW = math.ceil(W / GRID_STRIDE) + 2
-    GH = math.ceil(H / GRID_STRIDE) + 2
-    grid = np.zeros((GH, GW), dtype=np.uint8)
-
-    cx = W / 2.0
-    cy = H / 2.0
-
-    # Pre-generate 2D occupancy grid and dimensions for each tile
-    for t in tiles:
-        tw, th = max(10, int(t["fullW"])), max(10, int(t["fullH"]))
-        gw = math.ceil(tw / GRID_STRIDE)
-        gh = math.ceil(th / GRID_STRIDE)
-        t_grid = np.zeros((gh, gw), dtype=np.uint8)
-        sx = tw / float(t["mask"]["w"])
-        sy = th / float(t["mask"]["h"])
-        for c in t["mask"]["cells"]:
-            gx = min(gw - 1, int(c[0] * sx / GRID_STRIDE))
-            gy = min(gh - 1, int(c[1] * sy / GRID_STRIDE))
-            t_grid[gy, gx] = 1
-        t["t_grid"] = t_grid
-        t["gw"] = gw
-        t["gh"] = gh
-
-    tiles.sort(key=lambda t: t["fullW"] * t["fullH"], reverse=True)
-    placed = []
-
-    for i, t in enumerate(tiles):
-        gw, gh = t["gw"], t["gh"]
-        t_grid = t["t_grid"]
-
-        if i == 0:
-            tx = int((cx - t["fullW"] / 2.0) / GRID_STRIDE)
-            ty = int((cy - t["fullH"] / 2.0) / GRID_STRIDE)
-            grid[ty:ty+gh, tx:tx+gw] = np.maximum(grid[ty:ty+gh, tx:tx+gw], t_grid)
-            t["x"] = tx * GRID_STRIDE
-            t["y"] = ty * GRID_STRIDE
-            placed.append(t)
-            continue
-
-        best = None
-        step_r = 8
-        max_r = int(max(W, H) / GRID_STRIDE)
-
-        for r in range(0, max_r, step_r):
-            samples = max(16, min(48, int(r * 1.5)))
-            for k in range(samples):
-                theta = (i * 2.39996) + (k / float(samples)) * math.pi * 2.0
-                px = int((cx + r * GRID_STRIDE * x_bias * math.cos(theta) - t["fullW"] / 2.0) / GRID_STRIDE)
-                py = int((cy + r * GRID_STRIDE * y_bias * math.sin(theta) - t["fullH"] / 2.0) / GRID_STRIDE)
-
-                if px < 2 or px + gw >= GW - 2 or py < 2 or py + gh >= GH - 2:
-                    continue
-
-                sub = grid[py:py+gh, px:px+gw]
-                if not sub.any():
-                    best = (px, py)
-                    break
-                if not np.bitwise_and(sub, t_grid).any():
-                    best = (px, py)
-                    break
-            if best:
-                break
-
-        if best:
-            px, py = best
-            grid[py:py+gh, px:px+gw] = np.maximum(grid[py:py+gh, px:px+gw], t_grid)
-            t["x"] = px * GRID_STRIDE
-            t["y"] = py * GRID_STRIDE
-            placed.append(t)
-        else:
-            t["x"] = -99999
-            t["y"] = -99999
-            placed.append(t)
-
-    return placed
-
-def _cluster_bounds(arr):
-    L, R, T2, B = float("inf"), float("-inf"), float("inf"), float("-inf")
-    for t in arr:
-        if t["x"] < -1000:
-            continue
-        lx0 = t["x"]
-        lx1 = t["x"] + t["fullW"]
-        ly0 = t["y"]
-        ly1 = t["y"] + t["fullH"]
-        if lx0 < L: L = lx0
-        if lx1 > R: R = lx1
-        if ly0 < T2: T2 = ly0
-        if ly1 > B: B = ly1
-    return {"L": L, "R": R, "T": T2, "B": B}
 
 def _get_font(font_path, size):
     try:
@@ -538,6 +444,8 @@ def _get_font(font_path, size):
         return ImageFont.load_default()
 
 def render_native_collage(species_list, cfg, style="vintage", title=None, subtitle=None, show_names=True):
+    import numpy as np
+    from PIL import ImageFilter
     bg_color = (252, 250, 245) if style == "cartoon" else (248, 246, 240)
     text_color = (40, 35, 30)
     subtext_color = (120, 110, 100)
@@ -610,31 +518,42 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
         draw.text(((PANEL_W - (m_bbox[2]-m_bbox[0])) // 2, PANEL_H // 2), msg, font=empty_font, fill=subtext_color)
         return canvas
 
-    dims, masks = _load_dims_and_masks(here)
-
     CW = 1100
-    CH = 1330
+    CH = 1320
     collage_x0 = 50
     collage_y0 = rule_y + 35
+    GRID_STRIDE = 6
 
     T = _tuning(len(species_list))
     vp_area = CW * CH
     budget = vp_area * T["packingBudgetFrac"]
     min_area = vp_area * T["minTileAreaFrac"]
 
-    tiles = []
+    # Pre-load cutouts & alpha masks
+    raw_tiles = []
     for s in species_list:
         sci = s.get("sci", "")
         slug = slugify(sci)
-        pose = 1
-        has_flight = f"{slug}-2" in dims
-        if has_flight and random.random() < 0.2:
-            pose = 2
-            slug = f"{slug}-2"
+        img_path = os.path.join(asset_dir, f"{slug}.png")
+        if not os.path.exists(img_path):
+            img_path = os.path.join(asset_dir, f"{slug}-2.png")
+        if not os.path.exists(img_path):
+            img_path = os.path.join(asset_dir, "default.png")
 
-        mask = _load_mask(slug, masks)
-        d = dims.get(slug)
-        ar = (d[0] / float(d[1])) if d else 1.4
+        if not os.path.exists(img_path):
+            continue
+
+        try:
+            im = Image.open(img_path).convert("RGBA")
+        except Exception:
+            continue
+
+        bbox = im.getbbox()
+        if bbox:
+            im = im.crop(bbox)
+        
+        bw, bh = im.size
+        ar = bw / float(bh)
         n = float(s.get("n") or 1)
         score = math.pow(max(1.0, n), T["countExp"])
 
@@ -643,91 +562,174 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
         lbl_w = (l_bbox[2] - l_bbox[0]) if show_names else 0
         lbl_h = (l_bbox[3] - l_bbox[1] + 6) if show_names else 0
 
-        tiles.append({
-            "mask": mask, "data": s, "pose": pose, "slug": slug, "sci": sci, "com": com,
+        raw_tiles.append({
+            "im": im, "data": s, "sci": sci, "com": com, "slug": slug,
             "ar": ar, "score": score, "lbl_w": lbl_w, "lbl_h": lbl_h
         })
 
-    sum_score = sum(t["score"] for t in tiles) or 1.0
-    for t in tiles:
+    if not raw_tiles:
+        return canvas
+
+    sum_score = sum(t["score"] for t in raw_tiles) or 1.0
+    for t in raw_tiles:
         t["area"] = max(min_area, budget * t["score"] / sum_score)
 
-    sum_a = sum(t["area"] for t in tiles)
+    sum_a = sum(t["area"] for t in raw_tiles)
     if sum_a > budget:
-        fixed_sum = sum(t["area"] for t in tiles if t["area"] <= min_area + 1e-9)
+        fixed_sum = sum(t["area"] for t in raw_tiles if t["area"] <= min_area + 1e-9)
         flex_sum = sum_a - fixed_sum
         flex_budget = max(0, budget - fixed_sum)
         shrink = (flex_budget / flex_sum) if flex_sum > 0 else 1.0
-        for t in tiles:
+        for t in raw_tiles:
             if t["area"] > min_area + 1e-9:
                 t["area"] *= shrink
 
-    for t in tiles:
+    for t in raw_tiles:
         t["fullW"] = math.sqrt(t["area"] * t["ar"])
         t["fullH"] = t["fullW"] / t["ar"]
 
-    x_bias = 1.0
-    y_bias = 1.5
-    pad = 3
+    def do_pack(tiles, scale_factor=1.0):
+        GW = math.ceil(CW / GRID_STRIDE) + 4
+        GH = math.ceil(CH / GRID_STRIDE) + 4
+        grid = np.zeros((GH, GW), dtype=np.uint8)
 
-    placed = _mask_pack(tiles, CW, CH, x_bias, y_bias, pad)
-    b = _cluster_bounds(placed)
-
-    for iter_idx in range(10):
-        missing = any(t["x"] < -1000 for t in placed)
-        overflow = b["L"] < 0 or b["T"] < 0 or b["R"] > CW or b["B"] > CH
-        if not missing and not overflow:
-            break
-        scale = 0.93
-        if overflow:
-            cl_w = b["R"] - b["L"]
-            cl_h = b["B"] - b["T"]
-            sx = (CW * 0.96) / max(cl_w, CW * 0.96)
-            sy = (CH * 0.94) / max(cl_h, CH * 0.94)
-            scale = min(scale, sx, sy)
+        tile_objs = []
         for t in tiles:
-            t["fullW"] *= scale
-            t["fullH"] *= scale
-        placed = _mask_pack(tiles, CW, CH, x_bias, y_bias, pad)
-        b = _cluster_bounds(placed)
+            tw = max(16, int(t["fullW"] * scale_factor))
+            th = max(16, int(t["fullH"] * scale_factor))
+            
+            alpha = t["im"].split()[-1].resize((tw, th), Image.Resampling.BILINEAR)
+            gw = math.ceil(tw / GRID_STRIDE)
+            gh = math.ceil(th / GRID_STRIDE)
+            
+            alpha_grid = alpha.resize((gw, gh), Image.Resampling.BILINEAR)
+            arr = np.array(alpha_grid)
+            bird_mask = (arr > 35).astype(np.uint8)
 
-    cl_cx = (b["L"] + b["R"]) / 2.0
-    cl_cy = (b["T"] + b["B"]) / 2.0
-    dx = (CW / 2.0) - cl_cx
-    dy = (CH / 2.0) - cl_cy
+            lbl_gw = math.ceil(t["lbl_w"] / GRID_STRIDE) if show_names else 0
+            lbl_gh = math.ceil(t["lbl_h"] / GRID_STRIDE) if show_names else 0
+
+            tot_gw = max(gw, lbl_gw)
+            tot_gh = gh + (lbl_gh + 1 if show_names else 0)
+
+            c_mask = np.zeros((tot_gh, tot_gw), dtype=np.uint8)
+            bx_off = (tot_gw - gw) // 2
+            c_mask[:gh, bx_off:bx_off+gw] = bird_mask
+            if show_names and lbl_gh > 0:
+                lx_off = (tot_gw - lbl_gw) // 2
+                c_mask[gh:gh+lbl_gh, lx_off:lx_off+lbl_gw] = 1
+
+            pil_c = Image.fromarray(c_mask * 255)
+            pil_dilated = pil_c.filter(ImageFilter.MaxFilter(5))
+            s_mask = (np.array(pil_dilated) > 0).astype(np.uint8)
+
+            tile_objs.append({
+                "raw": t, "tw": tw, "th": th, "gw": tot_gw, "gh": tot_gh,
+                "bird_gw": gw, "bird_gh": gh, "bx_off": bx_off,
+                "c_mask": c_mask, "s_mask": s_mask,
+                "area": tot_gw * tot_gh
+            })
+
+        tile_objs.sort(key=lambda o: o["area"], reverse=True)
+
+        cx = GW // 2
+        cy = GH // 2
+        placed = []
+
+        for i, obj in enumerate(tile_objs):
+            gw, gh = obj["gw"], obj["gh"]
+            c_mask = obj["c_mask"]
+            s_mask = obj["s_mask"]
+
+            if i == 0:
+                tx = cx - gw // 2
+                ty = cy - gh // 2 - 4
+                grid[ty:ty+gh, tx:tx+gw] = np.maximum(grid[ty:ty+gh, tx:tx+gw], s_mask)
+                obj["gx"] = tx
+                obj["gy"] = ty
+                placed.append(obj)
+                continue
+
+            best = None
+            step_r = 2
+            max_r = max(GW, GH)
+
+            for r in range(4, max_r, step_r):
+                samples = max(24, min(64, int(r * 2.2)))
+                for k in range(samples):
+                    theta = (i * 2.39996) + (k / float(samples)) * math.pi * 2.0
+                    px = int(cx + r * 1.0 * math.cos(theta) - gw / 2.0)
+                    py = int(cy + r * 1.35 * math.sin(theta) - gh / 2.0)
+
+                    if px < 2 or px + gw >= GW - 2 or py < 2 or py + gh >= GH - 2:
+                        continue
+
+                    sub = grid[py:py+gh, px:px+gw]
+                    if not sub.any():
+                        best = (px, py)
+                        break
+                    if not np.bitwise_and(sub, c_mask).any():
+                        best = (px, py)
+                        break
+                if best:
+                    break
+
+            if best:
+                px, py = best
+                grid[py:py+gh, px:px+gw] = np.maximum(grid[py:py+gh, px:px+gw], s_mask)
+                obj["gx"] = px
+                obj["gy"] = py
+                placed.append(obj)
+            else:
+                return None
+
+        return placed
+
+    scale = 1.0
+    placed_tiles = None
+    for _ in range(12):
+        placed_tiles = do_pack(raw_tiles, scale_factor=scale)
+        if placed_tiles is not None and len(placed_tiles) == len(raw_tiles):
+            break
+        scale *= 0.91
+
+    if not placed_tiles:
+        placed_tiles = do_pack(raw_tiles, scale_factor=0.5)
+
+    min_x, max_x = float("inf"), float("-inf")
+    min_y, max_y = float("inf"), float("-inf")
+    for obj in placed_tiles:
+        px = obj["gx"] * GRID_STRIDE
+        py = obj["gy"] * GRID_STRIDE
+        pw = obj["gw"] * GRID_STRIDE
+        ph = obj["gh"] * GRID_STRIDE
+        if px < min_x: min_x = px
+        if px + pw > max_x: max_x = px + pw
+        if py < min_y: min_y = py
+        if py + ph > max_y: max_y = py + ph
+
+    cl_w = max_x - min_x
+    cl_h = max_y - min_y
+    off_x = collage_x0 + (CW - cl_w) // 2 - min_x
+    off_y = collage_y0 + (CH - cl_h) // 2 - min_y
 
     placed_count = 0
-    for t in placed:
-        if t["x"] < -1000:
-            continue
-        final_x = int(collage_x0 + t["x"] + dx)
-        final_y = int(collage_y0 + t["y"] + dy)
-        nw = max(10, int(t["fullW"]))
-        nh = max(10, int(t["fullH"]))
+    for obj in placed_tiles:
+        raw = obj["raw"]
+        bx = int(obj["gx"] * GRID_STRIDE + obj["bx_off"] * GRID_STRIDE + off_x)
+        by = int(obj["gy"] * GRID_STRIDE + off_y)
+        tw, th = obj["tw"], obj["th"]
 
-        slug = t["slug"]
-        base_slug = slugify(t["sci"])
-        img_path = os.path.join(asset_dir, f"{slug}.png")
-        if not os.path.exists(img_path):
-            img_path = os.path.join(asset_dir, f"{base_slug}.png")
-        if not os.path.exists(img_path):
-            img_path = os.path.join(asset_dir, "default.png")
-
-        if os.path.exists(img_path):
-            try:
-                b_img = Image.open(img_path).convert("RGBA")
-                b_img = b_img.resize((nw, nh), Image.Resampling.LANCZOS)
-                canvas.paste(b_img, (final_x, final_y), b_img)
-                placed_count += 1
-            except Exception as e:
-                pass
+        scaled_im = raw["im"].resize((tw, th), Image.Resampling.LANCZOS)
+        canvas.paste(scaled_im, (bx, by), scaled_im)
+        placed_count += 1
 
         if show_names:
-            com = t["com"]
+            com = raw["com"]
             l_bbox = draw.textbbox((0, 0), com, font=font_label)
             lw = l_bbox[2] - l_bbox[0]
-            lx = final_x + (nw - lw) // 2
-            ly = final_y + nh + 3
+            lx = bx + (tw - lw) // 2
+            ly = by + th + 3
             draw.text((lx, ly), com, font=font_label, fill=text_color)
 
     footer_text = f"{placed_count} of {len(species_list)} species heard today"
