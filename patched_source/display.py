@@ -741,10 +741,22 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
 
 
 def obtain_image(cfg, species=None):
-    if cfg.get("shoot") or not (cfg.get("image_url") or cfg.get("image")):
+    style = str(cfg.get("style", cfg.get("art_style", "vintage"))).lower()
+    if style == "sketch" and (cfg.get("shoot") or not (cfg.get("image_url") or cfg.get("image"))):
+        from shoot import shoot
+        out = os.path.join(os.path.expanduser(cfg["cache"]), "shot.png")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        window_hours = _resolve_hours(cfg.get("hours", 24))
+        shoot(cfg["base_url"], out, title=cfg.get("shoot_title"), subtitle=cfg.get("shoot_subtitle"),
+              headline_px=cfg.get("shoot_headline_px", 42), eyebrow_px=cfg.get("shoot_eyebrow_px", 18),
+              lowercase=cfg.get("shoot_lowercase", False), mat=cfg.get("shoot_mat", 0.04),
+              small_floor=cfg.get("shoot_small_floor", 0.04), count_exp=cfg.get("shoot_count_exp", 0.65),
+              bird_names=cfg.get("bird_names", True), window_hours=window_hours,
+              auth=_auth(cfg), timeout_ms=cfg.get("timeout", 180) * 1000)
+        return Image.open(out).convert("RGB")
+    elif style in ("vintage", "cartoon") and (cfg.get("shoot") or not (cfg.get("image_url") or cfg.get("image"))):
         if species is None:
             species = fetch_species(cfg, _auth(cfg))
-        style = str(cfg.get("style", cfg.get("art_style", "vintage"))).lower()
         title = cfg.get("shoot_title") or "Avian Visitors"
         subtitle = cfg.get("shoot_subtitle") or "Heard Today"
         show_names = bool(cfg.get("bird_names", True))
@@ -752,10 +764,6 @@ def obtain_image(cfg, species=None):
     src = cfg["image_url"] or cfg["image"]
     if not src:
         raise ValueError("set image, image_url, or shoot in config")
-    # A pre-rendered frame is still someone's render, so ask it for names the
-    # same way this Pi asks its own browser. A source that does not know the
-    # parameter ignores it and sends what it always sent, so this is safe
-    # against anything. URLs only: a local file path has no query string.
     if cfg["image_url"]:
         src = frame_url(src, cfg["bird_names"])
     return get_image(src, cfg["timeout"], _auth(cfg))
@@ -788,7 +796,10 @@ def run(cfg, preview=None, force=False, use_signature=True, mat_box=False):
 
     try:
         img = obtain_image(cfg, species)
-        if img.size != (PANEL_W, PANEL_H):
+        style = str(cfg.get("style", cfg.get("art_style", "vintage"))).lower()
+        if style == "sketch" and img.size == (PANEL_W, PANEL_H):
+            img = mat_and_center(img, cfg["mat"], cfg["opening"])
+        elif img.size != (PANEL_W, PANEL_H):
             img = fit_panel(img)
             img = mat_and_center(img, cfg["mat"], cfg["opening"])
     except Exception as e:
