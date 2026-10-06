@@ -94,7 +94,8 @@ def _bucket(n):
 
 
 def fetch_recent(base, hours, timeout, auth=None):
-    url = f"{base.rstrip('/')}/avian/api/birdnet-api.php?action=recent&hours={hours}"
+    h = _resolve_hours(hours)
+    url = f"{base.rstrip('/')}/avian/api/birdnet-api.php?action=recent&hours={h}"
     req = urllib.request.Request(url, headers={"User-Agent": "AvianVisitors-frame/1.0"})
     if auth:
         req.add_header("Authorization", auth)
@@ -391,9 +392,26 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
     subtext_color = (120, 110, 100)
 
     here = os.path.dirname(os.path.abspath(__file__))
-    asset_base = os.path.join(here, "assets")
-    font_base = "/home/birder/.local/share/fonts"
-    if not os.path.exists(font_base):
+    for d in [
+        os.path.join(here, "assets"),
+        os.path.join(here, "..", "assets"),
+        "/home/birder/AvianVisitors/frame/assets",
+    ]:
+        if os.path.exists(d):
+            asset_base = d
+            break
+    else:
+        asset_base = os.path.join(here, "assets")
+
+    for f in [
+        "/home/birder/.local/share/fonts",
+        os.path.join(here, "fonts"),
+        os.path.join(here, "..", "fonts"),
+    ]:
+        if os.path.exists(f):
+            font_base = f
+            break
+    else:
         font_base = os.path.join(here, "fonts")
 
     if style == "cartoon":
@@ -622,11 +640,13 @@ def run(cfg, preview=None, force=False, use_signature=True, mat_box=False):
         print("refresh:", "changed" if changed else "heal")
 
     try:
-        img = fit_panel(obtain_image(cfg, species))
+        img = obtain_image(cfg, species)
+        if img.size != (PANEL_W, PANEL_H):
+            img = fit_panel(img)
+            img = mat_and_center(img, cfg["mat"], cfg["opening"])
     except Exception as e:
         print(f"could not get image: {e}", file=sys.stderr)  # keep last panel image
         return
-    img = mat_and_center(img, cfg["mat"], cfg["opening"])
     if preview:
         out = quantize_spectra6(img)
         if mat_box:
