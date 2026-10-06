@@ -526,7 +526,8 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
 
     T = _tuning(len(species_list))
     vp_area = CW * CH
-    style_area_scale = 1.21 if style == "vintage" else 1.0
+    # Scale vintage birds up by ~38% in linear dimension (1.90x area) to fill the 13.3" frame
+    style_area_scale = 1.90 if style == "vintage" else 1.0
     budget = vp_area * T["packingBudgetFrac"] * style_area_scale
     min_area = vp_area * T["minTileAreaFrac"] * style_area_scale
 
