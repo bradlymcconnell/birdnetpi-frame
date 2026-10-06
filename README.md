@@ -30,41 +30,53 @@ The 13.3" Spectra 6 panel drives its $1600 \times 1200$ resolution in two $600 \
 
 ## Core Features & Applied Patches
 
-### 1. Dual Art Style System
+### 1. Tri-Mode Art Style System
+* **`style = "vintage"` (1800s Natural History Lithograph Mode):**
+  * Displays 19th-century European naturalist bookplates (Audubon / Gould / von Wright) from a library of 1,215 species cutouts in `assets/vintage/`.
+  * Paired with classical **EB Garamond Italic** (`EBGaramond-Italic.ttf`) and **Libre Baskerville** bookplate typography.
+  * Powered by a sub-second vectorized 2D alpha mask collision engine with 5px morphological dilation (`ImageFilter.MaxFilter(5)`) for zero feather or label overlaps.
+* **`style = "sketch"` (Japanese Woodblock & Audubon Mode):**
+  * Classic vintage Japanese *Kachō-e* woodblock prints and natural history field plates using the authentic AvianVisitors browser engine.
+  * Paired with flowing **Caveat** (`Caveat.ttf`) cursive naturalist script with curved tangent labels hugging each bird's contour.
+  * Includes flight poses (e.g. wings-spread *Pileated Woodpecker*, hovering *Tufted Titmouse*).
 * **`style = "cartoon"` (Species Caricature Mode):**
   * Displays round, plump bird caricatures perched on natural twigs with authentic species-specific plumage.
-  * Paired with textured **Crayon** (`FingerPaint-Regular.ttf`) typography for a storybook chalkboard feel.
-  * Uses 138 pre-rendered local cutouts with automatic pose fallback (`[slug]-2.png` $\rightarrow$ `[slug].png` $\rightarrow$ `default.png`).
-* **`style = "sketch"` (Japanese Woodblock & Audubon Mode):**
-  * Classic vintage Japanese *Kachō-e* woodblock prints and natural history field plates.
-  * Paired with flowing **Caveat** (`Caveat.ttf`) cursive naturalist script.
-  * Fetches dynamically from station `/avian/api/cutout.php`.
+  * Paired with textured **Finger Paint** (`FingerPaint-Regular.ttf`) typography for a storybook chalkboard feel.
+  * Uses 138 pre-rendered local cutouts with automatic pose fallback.
 
-### 2. Automatic Typography Pairing Engine
-* Setting `font = "auto"` automatically selects the ideal font for the active style (`cartoon` $\rightarrow$ Finger Paint, `sketch` $\rightarrow$ Caveat).
+### 2. Unified Detection Count & Flock Sizing Hierarchy
+All modes share identical scaling mathematics:
+* **$count^{0.22}$ Exponent**: Scales each species' area proportionally with detection count so hero birds stand out without dwarfing other species.
+* **15% Rare-Bird Floor (`shoot_small_floor = 0.15`)**: Prevents rare or single-call visitors from shrinking below recognition.
+* **Dynamic $n$-Species Budget**: Automatically expands bird sizes when few species are heard (e.g. morning) and gracefully tightens as more species arrive.
+
+### 3. Automatic Typography Pairing Engine
+* Setting `font = "auto"` automatically selects the ideal font for the active style (`vintage` $\rightarrow$ EB Garamond, `cartoon` $\rightarrow$ Finger Paint, `sketch` $\rightarrow$ Caveat).
 * Full typography suite included:
-  * `FingerPaint-Regular.ttf` (Crayon / Finger Paint)
+  * `EBGaramond-Italic.ttf` (1800s Lithograph Monograph Serif)
+  * `LibreBaskerville-Italic.ttf` (Bookplate Serif)
   * `Caveat.ttf` (Handwritten Cursive)
+  * `FingerPaint-Regular.ttf` (Crayon / Finger Paint)
   * `LuckiestGuy-Regular.ttf` (Bold Comic / Arcade)
   * `PatrickHand-Regular.ttf` (Marker / Classroom)
   * `GloriaHallelujah-Regular.ttf` (Casual Blackboard)
   * `GochiHand-Regular.ttf` (Cute Rounded Script)
 
-### 3. Home Assistant Real-Time Integration & REST API
+### 4. Home Assistant Real-Time Integration & REST API
 * **`birdframe-api.service`** runs an asynchronous HTTP server and real-time state synchronizer on port `8088`.
 * Bi-directionally syncs with Home Assistant entities:
-  * `input_boolean.birdframe_cartoon_mode`: Toggles between Cartoon and Sketch styles.
+  * `input_select.birdframe_art_style`: Seamlessly switches between `Vintage`, `Sketch`, and `Cartoon`.
   * `input_button.birdframe_refresh_display`: Triggers an immediate e-ink hardware redraw.
 * **REST Endpoints:**
   * `GET /api/status`: Returns current style, active font, and station reachability.
-  * `GET /api/set?style=cartoon` / `GET /api/set?style=sketch`: Sets style and triggers refresh.
-  * `GET /api/toggle`: Toggles style and triggers refresh.
+  * `GET /api/set?style=vintage` / `GET /api/set?style=sketch` / `GET /api/set?style=cartoon`: Sets style and triggers refresh.
+  * `GET /api/toggle`: Cycles style (`vintage` $\rightarrow$ `sketch` $\rightarrow$ `cartoon` $\rightarrow$ `vintage`) and refreshes.
   * `GET /api/refresh`: Forces instant screen redraw.
 
-### 4. 4KB SPI DMA Chunking (`patched_source/inky_el133uf1.py`)
+### 5. 4KB SPI DMA Chunking (`patched_source/inky_el133uf1.py`)
 * Eliminates Linux kernel DMA buffer exhaustion (`[Errno 12] Cannot allocate memory`) on 512MB Pi Zero 2 W by chunking transfers into 4096-byte slices.
 
-### 5. Daily Calendar Reset & Display Clamping
+### 6. Daily Calendar Reset & Display Clamping
 * Implements true calendar-date filtering (`hours = "today"`).
 * Stores `last_date` in `state.json` and resets display to empty nest at dawn.
 * Applies PIL `ImageEnhance` (+40% saturation, +20% contrast, +30% sharpness) and pure-white pixel clamping for museum-grade e-ink presentation.
@@ -91,6 +103,7 @@ The 13.3" Spectra 6 panel drives its $1600 \times 1200$ resolution in two $600 \
 │   ├── birdframe.timer          # Scheduled refresh timer
 │   └── birdframe-api.service    # Background API daemon systemd unit
 ├── assets/
+│   ├── vintage/                 # 1,215 species antique lithograph cutouts
 │   └── cartoon/                 # 138 species transparent cartoon cutouts
 ├── fonts/                       # Complete typography suite (.ttf)
 ├── boot/
