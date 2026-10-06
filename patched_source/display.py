@@ -380,6 +380,219 @@ def obtain_image(cfg, species=None):
         shoot_birdweather(out, species, title=cfg["shoot_title"], subtitle=cfg["shoot_subtitle"],
                           timeout_ms=cfg["timeout"] * 1000, bird_names=cfg["bird_names"])
         return Image.open(out).convert("RGB")
+_DIMS_CACHE = None
+_MASKS_CACHE = None
+_MASK_DEC_CACHE = {}
+
+def _load_dims_and_masks(base_dir):
+    global _DIMS_CACHE, _MASKS_CACHE
+    if _DIMS_CACHE is not None and _MASKS_CACHE is not None:
+        return _DIMS_CACHE, _MASKS_CACHE
+    dims_path = os.path.join(base_dir, "dims.json")
+    masks_path = os.path.join(base_dir, "masks.json")
+    if not os.path.exists(dims_path):
+        dims_path = os.path.join(os.path.dirname(base_dir), "dims.json")
+    if not os.path.exists(masks_path):
+        masks_path = os.path.join(os.path.dirname(base_dir), "masks.json")
+    if os.path.exists(dims_path):
+        with open(dims_path, "r") as f:
+            _DIMS_CACHE = json.load(f)
+    else:
+        _DIMS_CACHE = {}
+    if os.path.exists(masks_path):
+        with open(masks_path, "r") as f:
+            _MASKS_CACHE = json.load(f)
+    else:
+        _MASKS_CACHE = {}
+    return _DIMS_CACHE, _MASKS_CACHE
+
+def _load_mask(slug, masks_dict):
+    if slug in _MASK_DEC_CACHE:
+        return _MASK_DEC_CACHE[slug]
+    rec = masks_dict.get(slug)
+    if not rec:
+        w, h = 60, 60
+        cells = [[x, y] for y in range(h) for x in range(w) if ((x-30)**2 + (y-30)**2) < 28**2]
+        res = {"w": w, "h": h, "cells": cells}
+        _MASK_DEC_CACHE[slug] = res
+        return res
+    raw = base64.b64decode(rec["bits"])
+    w, h = rec["w"], rec["h"]
+    cells = []
+    for y in range(h):
+        for x in range(w):
+            i = y * w + x
+            b = raw[i >> 3]
+            if (b >> (7 - (i & 7))) & 1:
+                cells.append([x, y])
+    res = {"w": w, "h": h, "cells": cells}
+    _MASK_DEC_CACHE[slug] = res
+    return res
+
+def _tuning(n):
+    return {
+        "packingBudgetFrac": 0.46 if n <= 4 else (0.40 if n <= 12 else (0.34 if n <= 24 else 0.28)),
+        "countExp": 0.65,
+        "minTileAreaFrac": 0.0100 if n <= 8 else (0.0075 if n <= 20 else 0.0055),
+        "ellipseAspectBias": 2.1,
+    }
+
+def _mask_pack(tiles, W, H, x_bias=1.0, y_bias=1.5, pad=3):
+    import numpy as np
+    GRID_STRIDE = 4
+    GW = math.ceil(W / GRID_STRIDE) + 2
+    GH = math.ceil(H / GRID_STRIDE) + 2
+    grid = np.zeros((GH, GW), dtype=np.uint8)
+
+    cx = W / 2.0
+    cy = H / 2.0
+
+    tiles.sort(key=lambda t: t["fullW"] * t["fullH"], reverse=True)
+    placed = []
+
+    seed = [0x9E3779B9]
+    def rand():
+        seed[0] = (seed[0] * 16807) % 2147483647
+        return seed[0] / 2147483647.0
+
+    def get_cell_ranges(tile, tx, ty):
+        sx = tile["fullW"] / tile["mask"]["w"]
+        sy = tile["fullH"] / tile["mask"]["h"]
+        cells = tile["mask"]["cells"]
+        ranges = []
+        for c in cells:
+            x0 = max(0, min(GW - 1, int((tx + c[0] * sx) / GRID_STRIDE)))
+            y0 = max(0, min(GH - 1, int((ty + c[1] * sy) / GRID_STRIDE)))
+            x1 = max(0, min(GW - 1, int((tx + (c[0] + 1) * sx) / GRID_STRIDE)))
+            y1 = max(0, min(GH - 1, int((ty + (c[1] + 1) * sy) / GRID_STRIDE)))
+            ranges.append((x0, y0, x1, y1))
+        return ranges
+
+    def off_grid(tile, tx, ty):
+        lbl_h = tile.get("lbl_h", 0)
+        lbl_w = tile.get("lbl_w", 0)
+        lx0 = min(0, (tile["fullW"] - lbl_w) / 2.0)
+        lx1 = max(tile["fullW"], (tile["fullW"] + lbl_w) / 2.0)
+        if tx + lx0 < 0 or tx + lx1 > W or ty < 0 or ty + tile["fullH"] + lbl_h > H:
+            return True
+        return False
+
+    def collides(tile, tx, ty):
+        ranges = get_cell_ranges(tile, tx, ty)
+        for x0, y0, x1, y1 in ranges:
+            if grid[y0:y1+1, x0:x1+1].any():
+                return True
+        lbl_h = tile.get("lbl_h", 0)
+        lbl_w = tile.get("lbl_w", 0)
+        if lbl_h > 0:
+            lx0 = max(0, min(GW - 1, int((tx + (tile["fullW"] - lbl_w) / 2.0) / GRID_STRIDE)))
+            ly0 = max(0, min(GH - 1, int((ty + tile["fullH"]) / GRID_STRIDE)))
+            lx1 = max(0, min(GW - 1, int((tx + (tile["fullW"] + lbl_w) / 2.0) / GRID_STRIDE)))
+            ly1 = max(0, min(GH - 1, int((ty + tile["fullH"] + lbl_h) / GRID_STRIDE)))
+            if grid[ly0:ly1+1, lx0:lx1+1].any():
+                return True
+        return False
+
+    def stamp(tile, tx, ty):
+        ranges = get_cell_ranges(tile, tx, ty)
+        for x0, y0, x1, y1 in ranges:
+            sx0 = max(0, x0 - pad)
+            sy0 = max(0, y0 - pad)
+            sx1 = min(GW - 1, x1 + pad)
+            sy1 = min(GH - 1, y1 + pad)
+            grid[sy0:sy1+1, sx0:sx1+1] = 1
+
+        lbl_h = tile.get("lbl_h", 0)
+        lbl_w = tile.get("lbl_w", 0)
+        if lbl_h > 0:
+            lpad = min(pad, 2)
+            lx0 = max(0, int((tx + (tile["fullW"] - lbl_w) / 2.0) / GRID_STRIDE) - lpad)
+            ly0 = max(0, int((ty + tile["fullH"]) / GRID_STRIDE) - lpad)
+            lx1 = min(GW - 1, int((tx + (tile["fullW"] + lbl_w) / 2.0) / GRID_STRIDE) + lpad)
+            ly1 = min(GH - 1, int((ty + tile["fullH"] + lbl_h) / GRID_STRIDE) + lpad)
+            grid[ly0:ly1+1, lx0:lx1+1] = 1
+
+    for i, t in enumerate(tiles):
+        if i == 0:
+            tx = cx - t["fullW"] / 2.0
+            ty = cy - t["fullH"] / 2.0
+            t["x"] = tx
+            t["y"] = ty
+            stamp(t, tx, ty)
+            placed.append(t)
+            continue
+
+        com_x, com_y, com_w = 0.0, 0.0, 0.0
+        for p in placed:
+            a = p["fullW"] * p["fullH"]
+            com_x += (p["x"] + p["fullW"] / 2.0) * a
+            com_y += (p["y"] + p["fullH"] / 2.0) * a
+            com_w += a
+        if com_w > 0:
+            com_x /= com_w
+            com_y /= com_w
+        else:
+            com_x, com_y = cx, cy
+
+        best = None
+        best_cost = float("inf")
+        step = max(GRID_STRIDE, min(t["fullW"], t["fullH"]) * 0.05)
+        max_r = max(W, H)
+        found_ring = -1
+        phase = rand() * math.pi * 2.0
+
+        r = 0.0
+        while r <= max_r:
+            if found_ring >= 0 and r > found_ring + step * 2.0:
+                break
+            samples = max(36, int(r / 1.6))
+            for k in range(samples):
+                theta = phase + (k / float(samples)) * math.pi * 2.0
+                px = cx + r * x_bias * math.cos(theta) - t["fullW"] / 2.0
+                py = cy + r * y_bias * math.sin(theta) - t["fullH"] / 2.0
+                if off_grid(t, px, py):
+                    continue
+                if collides(t, px, py):
+                    continue
+                dxx = (px + t["fullW"] / 2.0 - com_x)
+                dyy = (py + t["fullH"] / 2.0 - com_y)
+                cost = math.hypot(dxx / x_bias, dyy / y_bias) + rand() * step * 0.5
+                if cost < best_cost:
+                    best_cost = cost
+                    best = (px, py)
+            if best and found_ring < 0:
+                found_ring = r
+            r += step
+
+        if best:
+            t["x"] = best[0]
+            t["y"] = best[1]
+            stamp(t, best[0], best[1])
+            placed.append(t)
+        else:
+            t["x"] = -99999
+            t["y"] = -99999
+            placed.append(t)
+
+    return placed
+
+def _cluster_bounds(arr):
+    L, R, T2, B = float("inf"), float("-inf"), float("inf"), float("-inf")
+    for t in arr:
+        if t["x"] < -1000:
+            continue
+        lbl_h = t.get("lbl_h", 0)
+        lbl_w = t.get("lbl_w", 0)
+        lx0 = t["x"] + min(0, (t["fullW"] - lbl_w) / 2.0)
+        lx1 = t["x"] + max(t["fullW"], (t["fullW"] + lbl_w) / 2.0)
+        ly0 = t["y"]
+        ly1 = t["y"] + t["fullH"] + lbl_h
+        if lx0 < L: L = lx0
+        if lx1 > R: R = lx1
+        if ly0 < T2: T2 = ly0
+        if ly1 > B: B = ly1
+    return {"L": L, "R": R, "T": T2, "B": B}
+
 def _get_font(font_path, size):
     try:
         return ImageFont.truetype(font_path, size)
@@ -387,7 +600,7 @@ def _get_font(font_path, size):
         return ImageFont.load_default()
 
 def render_native_collage(species_list, cfg, style="vintage", title=None, subtitle=None, show_names=True):
-    bg_color = (248, 246, 240)
+    bg_color = (252, 250, 245) if style == "cartoon" else (248, 246, 240)
     text_color = (40, 35, 30)
     subtext_color = (120, 110, 100)
 
@@ -418,7 +631,6 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
         asset_dir = os.path.join(asset_base, "cartoon")
         font_main = os.path.join(font_base, "FingerPaint-Regular.ttf")
         font_title = font_main
-        bg_color = (252, 250, 245)
     elif style == "vintage":
         asset_dir = os.path.join(asset_base, "vintage")
         font_main = os.path.join(font_base, "EBGaramond-Italic.ttf")
@@ -433,29 +645,25 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
     canvas = Image.new("RGB", (PANEL_W, PANEL_H), bg_color)
     draw = ImageDraw.Draw(canvas)
 
-    pad_top = 80
-    pad_side = 80
-    
+    pad_top = 70
     font_sub = _get_font(font_title, 26)
     font_head = _get_font(font_title, 54)
-    font_labels = _get_font(font_main, 24 if style != "sketch" else 28)
+    font_label = _get_font(font_main, 24 if style != "sketch" else 28)
 
     # Subtitle
     sub_text = (subtitle or "HEARD TODAY").upper()
     sub_bbox = draw.textbbox((0, 0), sub_text, font=font_sub)
-    sub_w = sub_bbox[2] - sub_bbox[0]
-    draw.text(((PANEL_W - sub_w) // 2, pad_top), sub_text, font=font_sub, fill=subtext_color)
+    draw.text(((PANEL_W - (sub_bbox[2] - sub_bbox[0])) // 2, pad_top), sub_text, font=font_sub, fill=subtext_color)
 
     # Headline
     head_text = title or "Avian Visitors"
-    head_y = pad_top + 38
+    head_y = pad_top + 36
     head_bbox = draw.textbbox((0, 0), head_text, font=font_head)
-    head_w = head_bbox[2] - head_bbox[0]
-    draw.text(((PANEL_W - head_w) // 2, head_y), head_text, font=font_head, fill=text_color)
+    draw.text(((PANEL_W - (head_bbox[2] - head_bbox[0])) // 2, head_y), head_text, font=font_head, fill=text_color)
 
     # Rule
-    rule_y = head_y + 75
-    draw.line([(PANEL_W // 2 - 120, rule_y), (PANEL_W // 2 + 120, rule_y)], fill=(190, 180, 170), width=1)
+    rule_y = head_y + 70
+    draw.line([(PANEL_W // 2 - 140, rule_y), (PANEL_W // 2 + 140, rule_y)], fill=(190, 180, 170), width=1)
 
     if not species_list:
         empty_font = _get_font(font_main, 32)
@@ -464,131 +672,130 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
         draw.text(((PANEL_W - (m_bbox[2]-m_bbox[0])) // 2, PANEL_H // 2), msg, font=empty_font, fill=subtext_color)
         return canvas
 
-    collage_top = rule_y + 40
-    collage_bottom = PANEL_H - 90
-    collage_left = pad_side
-    collage_right = PANEL_W - pad_side
-    
-    c_w = collage_right - collage_left
-    c_h = collage_bottom - collage_top
-    center_x = collage_left + c_w // 2
-    center_y = collage_top + c_h // 2 + 20
+    dims, masks = _load_dims_and_masks(here)
 
-    items = sorted(species_list, key=lambda s: s.get("n", 1), reverse=True)
-    num_items = len(items)
+    CW = 1100
+    CH = 1330
+    collage_x0 = 50
+    collage_y0 = rule_y + 35
 
-    counts = [s.get("n", 1) for s in items]
-    count_exp = 0.28
-    scores = [c ** count_exp for c in counts]
-    max_score = max(scores)
-    min_score = min(scores)
+    T = _tuning(len(species_list))
+    vp_area = CW * CH
+    budget = vp_area * T["packingBudgetFrac"]
+    min_area = vp_area * T["minTileAreaFrac"]
 
-    if num_items <= 5:
-        max_dim, min_dim = 420, 260
-    elif num_items <= 12:
-        max_dim, min_dim = 360, 180
-    elif num_items <= 25:
-        max_dim, min_dim = 300, 140
-    else:
-        max_dim, min_dim = 240, 110
-
-    placed_boxes = []
-    placed_birds = []
-
-    def overlaps(b1, b2, pad=12):
-        return not (b1[2] + pad < b2[0] or b1[0] - pad > b2[2] or 
-                    b1[3] + pad < b2[1] or b1[1] - pad > b2[3])
-
-    for i, s in enumerate(items):
+    tiles = []
+    for s in species_list:
         sci = s.get("sci", "")
-        com = s.get("com", sci)
-        score = scores[i]
-        
-        t = (score - min_score) / (max_score - min_score) if max_score > min_score else 1.0
-        target_max_dim = int(min_dim + t * (max_dim - min_dim))
+        slug = slugify(sci)
+        pose = 1
+        has_flight = f"{slug}-2" in dims
+        if has_flight and random.random() < 0.2:
+            pose = 2
+            slug = f"{slug}-2"
 
-        slug = sci.lower().replace(" ", "-")
+        mask = _load_mask(slug, masks)
+        d = dims.get(slug)
+        ar = (d[0] / float(d[1])) if d else 1.4
+        n = float(s.get("n") or 1)
+        score = math.pow(max(1.0, n), T["countExp"])
+
+        com = s.get("com", sci)
+        l_bbox = draw.textbbox((0, 0), com, font=font_label)
+        lbl_w = (l_bbox[2] - l_bbox[0]) if show_names else 0
+        lbl_h = (l_bbox[3] - l_bbox[1] + 6) if show_names else 0
+
+        tiles.append({
+            "mask": mask, "data": s, "pose": pose, "slug": slug, "sci": sci, "com": com,
+            "ar": ar, "score": score, "lbl_w": lbl_w, "lbl_h": lbl_h
+        })
+
+    sum_score = sum(t["score"] for t in tiles) or 1.0
+    for t in tiles:
+        t["area"] = max(min_area, budget * t["score"] / sum_score)
+
+    sum_a = sum(t["area"] for t in tiles)
+    if sum_a > budget:
+        fixed_sum = sum(t["area"] for t in tiles if t["area"] <= min_area + 1e-9)
+        flex_sum = sum_a - fixed_sum
+        flex_budget = max(0, budget - fixed_sum)
+        shrink = (flex_budget / flex_sum) if flex_sum > 0 else 1.0
+        for t in tiles:
+            if t["area"] > min_area + 1e-9:
+                t["area"] *= shrink
+
+    for t in tiles:
+        t["fullW"] = math.sqrt(t["area"] * t["ar"])
+        t["fullH"] = t["fullW"] / t["ar"]
+
+    x_bias = 1.0
+    y_bias = 1.5
+    pad = 3
+
+    placed = _mask_pack(tiles, CW, CH, x_bias, y_bias, pad)
+    b = _cluster_bounds(placed)
+
+    for iter_idx in range(10):
+        missing = any(t["x"] < -1000 for t in placed)
+        overflow = b["L"] < 0 or b["T"] < 0 or b["R"] > CW or b["B"] > CH
+        if not missing and not overflow:
+            break
+        scale = 0.93
+        if overflow:
+            cl_w = b["R"] - b["L"]
+            cl_h = b["B"] - b["T"]
+            sx = (CW * 0.96) / max(cl_w, CW * 0.96)
+            sy = (CH * 0.94) / max(cl_h, CH * 0.94)
+            scale = min(scale, sx, sy)
+        for t in tiles:
+            t["fullW"] *= scale
+            t["fullH"] *= scale
+        placed = _mask_pack(tiles, CW, CH, x_bias, y_bias, pad)
+        b = _cluster_bounds(placed)
+
+    cl_cx = (b["L"] + b["R"]) / 2.0
+    cl_cy = (b["T"] + b["B"]) / 2.0
+    dx = (CW / 2.0) - cl_cx
+    dy = (CH / 2.0) - cl_cy
+
+    placed_count = 0
+    for t in placed:
+        if t["x"] < -1000:
+            continue
+        final_x = int(collage_x0 + t["x"] + dx)
+        final_y = int(collage_y0 + t["y"] + dy)
+        nw = max(10, int(t["fullW"]))
+        nh = max(10, int(t["fullH"]))
+
+        slug = t["slug"]
+        base_slug = slugify(t["sci"])
         img_path = os.path.join(asset_dir, f"{slug}.png")
         if not os.path.exists(img_path):
+            img_path = os.path.join(asset_dir, f"{base_slug}.png")
+        if not os.path.exists(img_path):
             img_path = os.path.join(asset_dir, "default.png")
-            if not os.path.exists(img_path):
-                continue
-        
-        try:
-            b_img = Image.open(img_path).convert("RGBA")
-        except Exception:
-            continue
 
-        bw, bh = b_img.size
-        scale = target_max_dim / max(bw, bh)
-        nw, nh = max(20, int(bw * scale)), max(20, int(bh * scale))
-        b_img = b_img.resize((nw, nh), Image.Resampling.LANCZOS)
+        if os.path.exists(img_path):
+            try:
+                b_img = Image.open(img_path).convert("RGBA")
+                b_img = b_img.resize((nw, nh), Image.Resampling.LANCZOS)
+                canvas.paste(b_img, (final_x, final_y), b_img)
+                placed_count += 1
+            except Exception as e:
+                pass
 
-        lbl_h = 0
-        lbl_w = 0
         if show_names:
-            l_bbox = draw.textbbox((0, 0), com, font=font_labels)
-            lbl_w = l_bbox[2] - l_bbox[0]
-            lbl_h = (l_bbox[3] - l_bbox[1]) + 8
-
-        total_w = max(nw, lbl_w)
-        total_h = nh + lbl_h
-
-        best_pos = None
-        if i == 0:
-            bx = center_x - nw // 2
-            by = center_y - total_h // 2 - 40
-            best_pos = (bx, by)
-            box = (min(bx, center_x - total_w // 2), by, 
-                   max(bx + nw, center_x + total_w // 2), by + total_h)
-            placed_boxes.append(box)
-        else:
-            theta = (i * 2.39996) + (random.random() * 0.4 - 0.2)
-            step_r = 15
-            for step in range(1, 120):
-                r = step * step_r
-                rx = r * 1.05
-                ry = r * 1.35
-                cur_x = int(center_x + rx * math.cos(theta) - nw // 2)
-                cur_y = int(center_y + ry * math.sin(theta) - total_h // 2)
-
-                if cur_x < collage_left or cur_x + nw > collage_right:
-                    theta += 0.4
-                    continue
-                if cur_y < collage_top or cur_y + total_h > collage_bottom:
-                    theta += 0.4
-                    continue
-
-                test_box = (min(cur_x, cur_x + (nw - total_w)//2), cur_y,
-                            max(cur_x + nw, cur_x + nw + (total_w - nw)//2), cur_y + total_h)
-                
-                collision = False
-                for pb in placed_boxes:
-                    if overlaps(test_box, pb, pad=14):
-                        collision = True
-                        break
-                if not collision:
-                    best_pos = (cur_x, cur_y)
-                    placed_boxes.append(test_box)
-                    break
-                theta += 0.35
-
-        if best_pos:
-            placed_birds.append((b_img, best_pos[0], best_pos[1], com, total_w, nw, nh))
-
-    for b_img, bx, by, com, total_w, nw, nh in placed_birds:
-        canvas.paste(b_img, (bx, by), b_img)
-        if show_names:
-            l_bbox = draw.textbbox((0, 0), com, font=font_labels)
+            com = t["com"]
+            l_bbox = draw.textbbox((0, 0), com, font=font_label)
             lw = l_bbox[2] - l_bbox[0]
-            lx = bx + (nw - lw) // 2
-            ly = by + nh + 4
-            draw.text((lx, ly), com, font=font_labels, fill=text_color)
+            lx = final_x + (nw - lw) // 2
+            ly = final_y + nh + 3
+            draw.text((lx, ly), com, font=font_label, fill=text_color)
 
-    footer_text = f"{len(placed_birds)} species heard today"
+    footer_text = f"{placed_count} of {len(species_list)} species heard today"
     font_foot = _get_font(font_title, 20)
     f_bbox = draw.textbbox((0, 0), footer_text, font=font_foot)
-    draw.text(((PANEL_W - (f_bbox[2]-f_bbox[0])) // 2, PANEL_H - 55), footer_text, font=font_foot, fill=subtext_color)
+    draw.text(((PANEL_W - (f_bbox[2] - f_bbox[0])) // 2, PANEL_H - 50), footer_text, font=font_foot, fill=subtext_color)
 
     return canvas
 
