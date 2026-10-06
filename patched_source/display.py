@@ -746,13 +746,27 @@ def obtain_image(cfg, species=None):
         from shoot import shoot
         out = os.path.join(os.path.expanduser(cfg["cache"]), "shot.png")
         os.makedirs(os.path.dirname(out), exist_ok=True)
+        if species is None:
+            species = fetch_species(cfg, _auth(cfg))
         window_hours = _resolve_hours(cfg.get("hours", 24))
-        shoot(cfg["base_url"], out, title=cfg.get("shoot_title"), subtitle=cfg.get("shoot_subtitle"),
-              headline_px=cfg.get("shoot_headline_px", 42), eyebrow_px=cfg.get("shoot_eyebrow_px", 18),
-              lowercase=cfg.get("shoot_lowercase", False), mat=cfg.get("shoot_mat", 0.04),
-              small_floor=cfg.get("shoot_small_floor", 0.04), count_exp=cfg.get("shoot_count_exp", 0.65),
-              bird_names=cfg.get("bird_names", True), window_hours=window_hours,
-              auth=_auth(cfg), timeout_ms=cfg.get("timeout", 180) * 1000)
+        shoot(
+            cfg["base_url"],
+            out,
+            title=cfg.get("shoot_title"),
+            subtitle=cfg.get("shoot_subtitle"),
+            headline_px=cfg.get("shoot_headline_px", 42),
+            eyebrow_px=cfg.get("shoot_eyebrow_px", 18),
+            lowercase=cfg.get("shoot_lowercase", False),
+            mat=cfg.get("shoot_mat", 0.04),
+            small_floor=cfg.get("shoot_small_floor", 0.15),
+            count_exp=cfg.get("shoot_count_exp", 0.22),
+            timeout_ms=cfg.get("timeout", 180) * 1000,
+            user=cfg.get("basic_user"),
+            password=cfg.get("basic_pass"),
+            window_hours=window_hours,
+            species=species,
+            bird_names=cfg.get("bird_names", True),
+        )
         return Image.open(out).convert("RGB")
     elif style in ("vintage", "cartoon") and (cfg.get("shoot") or not (cfg.get("image_url") or cfg.get("image"))):
         if species is None:
@@ -797,7 +811,8 @@ def run(cfg, preview=None, force=False, use_signature=True, mat_box=False):
     try:
         img = obtain_image(cfg, species)
         style = str(cfg.get("style", cfg.get("art_style", "vintage"))).lower()
-        if style == "sketch" and img.size == (PANEL_W, PANEL_H):
+        if style == "sketch":
+            img = fit_panel(img)
             img = mat_and_center(img, cfg["mat"], cfg["opening"])
         elif img.size != (PANEL_W, PANEL_H):
             img = fit_panel(img)
