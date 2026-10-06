@@ -48,13 +48,12 @@ LAST_SELECT_STATE = None
 LAST_TOGGLE_STATE = None
 
 def update_style(new_style, notify_ha=True):
-    global LAST_SELECT_STATE, LAST_TOGGLE_STATE
+    global LAST_SELECT_STATE
     new_style = new_style.lower().strip()
     if new_style not in ("cartoon", "sketch", "vintage"):
         return False, f"Invalid style: {new_style}"
     
     LAST_SELECT_STATE = new_style
-    LAST_TOGGLE_STATE = ("on" if new_style == "cartoon" else "off")
 
     with open(CONFIG_PATH, "r") as f:
         lines = f.readlines()
@@ -85,7 +84,7 @@ def update_ha_states(style):
     if not token:
         return
     style_cap = style.capitalize()
-    # 1. Update input_select
+    # Update input_select
     try:
         url_sel = f"{HA_BASE_URL}/api/states/input_select.birdframe_art_style"
         payload_sel = json.dumps({
@@ -106,29 +105,9 @@ def update_ha_states(style):
     except Exception as e:
         print(f"Error updating HA input_select: {e}")
 
-    # 2. Update input_boolean toggle (on for cartoon, off for others)
-    try:
-        url_bool = f"{HA_BASE_URL}/api/states/input_boolean.birdframe_cartoon_mode"
-        payload_bool = json.dumps({
-            "state": "on" if style == "cartoon" else "off",
-            "attributes": {
-                "icon": "mdi:palette-outline",
-                "friendly_name": "BirdFrame Cartoon Mode"
-            }
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            url_bool, data=payload_bool,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            pass
-    except Exception as e:
-        print(f"Error updating HA input_boolean: {e}")
-
 def ha_sync_loop():
-    """Background polling loop that syncs Home Assistant select, toggle and button presses in real time."""
-    global LAST_SELECT_STATE, LAST_TOGGLE_STATE
+    """Background polling loop that syncs Home Assistant select dropdown and button presses in real time."""
+    global LAST_SELECT_STATE
     time.sleep(2)
     last_button_state = None
     first_run = True
@@ -150,7 +129,6 @@ def ha_sync_loop():
                         if cur_select in ("cartoon", "sketch", "vintage"):
                             if first_run:
                                 LAST_SELECT_STATE = cur_select
-                                LAST_TOGGLE_STATE = ("on" if cur_select == "cartoon" else "off")
                                 cfg = get_config()
                                 local_style = cfg.get("style", "sketch").lower()
                                 if local_style != cur_select:
@@ -161,39 +139,6 @@ def ha_sync_loop():
                                 update_style(cur_select, notify_ha=True)
                             else:
                                 LAST_SELECT_STATE = cur_select
-                except Exception:
-                    pass
-
-                # 2. Check Legacy Toggle State (if select didn't fire change)
-                url_toggle = f"{HA_BASE_URL}/api/states/input_boolean.birdframe_cartoon_mode"
-                req_t = urllib.request.Request(
-                    url_toggle,
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-                )
-                try:
-                    with urllib.request.urlopen(req_t, timeout=3) as resp:
-                        data = json.loads(resp.read().decode())
-                        current_ha_state = data.get("state") # 'on' or 'off'
-                        
-                        if current_ha_state in ("on", "off"):
-                            if first_run and LAST_SELECT_STATE is None:
-                                LAST_TOGGLE_STATE = current_ha_state
-                                cfg = get_config()
-                                local_style = cfg.get("style", "sketch").lower()
-                                expected_style = "cartoon" if current_ha_state == "on" else "sketch"
-                                if local_style != expected_style:
-                                    print(f"Initial sync: Setting style to {expected_style} from HA toggle {current_ha_state}")
-                                    update_style(expected_style, notify_ha=False)
-                            elif LAST_TOGGLE_STATE is not None and current_ha_state != LAST_TOGGLE_STATE:
-                                print(f"HA Toggle changed from {LAST_TOGGLE_STATE} to {current_ha_state}!")
-                                if current_ha_state == "on":
-                                    update_style("cartoon", notify_ha=True)
-                                else:
-                                    cfg = get_config()
-                                    if cfg.get("style", "").lower() == "cartoon":
-                                        update_style("sketch", notify_ha=True)
-                            else:
-                                LAST_TOGGLE_STATE = current_ha_state
                 except Exception:
                     pass
 
