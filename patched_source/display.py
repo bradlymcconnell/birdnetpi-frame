@@ -439,7 +439,7 @@ def _tuning(n):
 
 def _mask_pack(tiles, W, H, x_bias=1.0, y_bias=1.5, pad=3):
     import numpy as np
-    GRID_STRIDE = 4
+    GRID_STRIDE = 6
     GW = math.ceil(W / GRID_STRIDE) + 2
     GH = math.ceil(H / GRID_STRIDE) + 2
     grid = np.zeros((GH, GW), dtype=np.uint8)
@@ -447,127 +447,67 @@ def _mask_pack(tiles, W, H, x_bias=1.0, y_bias=1.5, pad=3):
     cx = W / 2.0
     cy = H / 2.0
 
+    # Pre-generate 2D occupancy grid and dimensions for each tile
+    for t in tiles:
+        tw, th = max(10, int(t["fullW"])), max(10, int(t["fullH"]))
+        gw = math.ceil(tw / GRID_STRIDE)
+        gh = math.ceil(th / GRID_STRIDE)
+        t_grid = np.zeros((gh, gw), dtype=np.uint8)
+        sx = tw / float(t["mask"]["w"])
+        sy = th / float(t["mask"]["h"])
+        for c in t["mask"]["cells"]:
+            gx = min(gw - 1, int(c[0] * sx / GRID_STRIDE))
+            gy = min(gh - 1, int(c[1] * sy / GRID_STRIDE))
+            t_grid[gy, gx] = 1
+        t["t_grid"] = t_grid
+        t["gw"] = gw
+        t["gh"] = gh
+
     tiles.sort(key=lambda t: t["fullW"] * t["fullH"], reverse=True)
     placed = []
 
-    seed = [0x9E3779B9]
-    def rand():
-        seed[0] = (seed[0] * 16807) % 2147483647
-        return seed[0] / 2147483647.0
-
-    def get_cell_ranges(tile, tx, ty):
-        sx = tile["fullW"] / tile["mask"]["w"]
-        sy = tile["fullH"] / tile["mask"]["h"]
-        cells = tile["mask"]["cells"]
-        ranges = []
-        for c in cells:
-            x0 = max(0, min(GW - 1, int((tx + c[0] * sx) / GRID_STRIDE)))
-            y0 = max(0, min(GH - 1, int((ty + c[1] * sy) / GRID_STRIDE)))
-            x1 = max(0, min(GW - 1, int((tx + (c[0] + 1) * sx) / GRID_STRIDE)))
-            y1 = max(0, min(GH - 1, int((ty + (c[1] + 1) * sy) / GRID_STRIDE)))
-            ranges.append((x0, y0, x1, y1))
-        return ranges
-
-    def off_grid(tile, tx, ty):
-        lbl_h = tile.get("lbl_h", 0)
-        lbl_w = tile.get("lbl_w", 0)
-        lx0 = min(0, (tile["fullW"] - lbl_w) / 2.0)
-        lx1 = max(tile["fullW"], (tile["fullW"] + lbl_w) / 2.0)
-        if tx + lx0 < 0 or tx + lx1 > W or ty < 0 or ty + tile["fullH"] + lbl_h > H:
-            return True
-        return False
-
-    def collides(tile, tx, ty):
-        ranges = get_cell_ranges(tile, tx, ty)
-        for x0, y0, x1, y1 in ranges:
-            if grid[y0:y1+1, x0:x1+1].any():
-                return True
-        lbl_h = tile.get("lbl_h", 0)
-        lbl_w = tile.get("lbl_w", 0)
-        if lbl_h > 0:
-            lx0 = max(0, min(GW - 1, int((tx + (tile["fullW"] - lbl_w) / 2.0) / GRID_STRIDE)))
-            ly0 = max(0, min(GH - 1, int((ty + tile["fullH"]) / GRID_STRIDE)))
-            lx1 = max(0, min(GW - 1, int((tx + (tile["fullW"] + lbl_w) / 2.0) / GRID_STRIDE)))
-            ly1 = max(0, min(GH - 1, int((ty + tile["fullH"] + lbl_h) / GRID_STRIDE)))
-            if grid[ly0:ly1+1, lx0:lx1+1].any():
-                return True
-        return False
-
-    def stamp(tile, tx, ty):
-        ranges = get_cell_ranges(tile, tx, ty)
-        for x0, y0, x1, y1 in ranges:
-            sx0 = max(0, x0 - pad)
-            sy0 = max(0, y0 - pad)
-            sx1 = min(GW - 1, x1 + pad)
-            sy1 = min(GH - 1, y1 + pad)
-            grid[sy0:sy1+1, sx0:sx1+1] = 1
-
-        lbl_h = tile.get("lbl_h", 0)
-        lbl_w = tile.get("lbl_w", 0)
-        if lbl_h > 0:
-            lpad = min(pad, 2)
-            lx0 = max(0, int((tx + (tile["fullW"] - lbl_w) / 2.0) / GRID_STRIDE) - lpad)
-            ly0 = max(0, int((ty + tile["fullH"]) / GRID_STRIDE) - lpad)
-            lx1 = min(GW - 1, int((tx + (tile["fullW"] + lbl_w) / 2.0) / GRID_STRIDE) + lpad)
-            ly1 = min(GH - 1, int((ty + tile["fullH"] + lbl_h) / GRID_STRIDE) + lpad)
-            grid[ly0:ly1+1, lx0:lx1+1] = 1
-
     for i, t in enumerate(tiles):
+        gw, gh = t["gw"], t["gh"]
+        t_grid = t["t_grid"]
+
         if i == 0:
-            tx = cx - t["fullW"] / 2.0
-            ty = cy - t["fullH"] / 2.0
-            t["x"] = tx
-            t["y"] = ty
-            stamp(t, tx, ty)
+            tx = int((cx - t["fullW"] / 2.0) / GRID_STRIDE)
+            ty = int((cy - t["fullH"] / 2.0) / GRID_STRIDE)
+            grid[ty:ty+gh, tx:tx+gw] = np.maximum(grid[ty:ty+gh, tx:tx+gw], t_grid)
+            t["x"] = tx * GRID_STRIDE
+            t["y"] = ty * GRID_STRIDE
             placed.append(t)
             continue
 
-        com_x, com_y, com_w = 0.0, 0.0, 0.0
-        for p in placed:
-            a = p["fullW"] * p["fullH"]
-            com_x += (p["x"] + p["fullW"] / 2.0) * a
-            com_y += (p["y"] + p["fullH"] / 2.0) * a
-            com_w += a
-        if com_w > 0:
-            com_x /= com_w
-            com_y /= com_w
-        else:
-            com_x, com_y = cx, cy
-
         best = None
-        best_cost = float("inf")
-        step = max(GRID_STRIDE, min(t["fullW"], t["fullH"]) * 0.05)
-        max_r = max(W, H)
-        found_ring = -1
-        phase = rand() * math.pi * 2.0
+        step_r = 8
+        max_r = int(max(W, H) / GRID_STRIDE)
 
-        r = 0.0
-        while r <= max_r:
-            if found_ring >= 0 and r > found_ring + step * 2.0:
-                break
-            samples = max(36, int(r / 1.6))
+        for r in range(0, max_r, step_r):
+            samples = max(16, min(48, int(r * 1.5)))
             for k in range(samples):
-                theta = phase + (k / float(samples)) * math.pi * 2.0
-                px = cx + r * x_bias * math.cos(theta) - t["fullW"] / 2.0
-                py = cy + r * y_bias * math.sin(theta) - t["fullH"] / 2.0
-                if off_grid(t, px, py):
+                theta = (i * 2.39996) + (k / float(samples)) * math.pi * 2.0
+                px = int((cx + r * GRID_STRIDE * x_bias * math.cos(theta) - t["fullW"] / 2.0) / GRID_STRIDE)
+                py = int((cy + r * GRID_STRIDE * y_bias * math.sin(theta) - t["fullH"] / 2.0) / GRID_STRIDE)
+
+                if px < 2 or px + gw >= GW - 2 or py < 2 or py + gh >= GH - 2:
                     continue
-                if collides(t, px, py):
-                    continue
-                dxx = (px + t["fullW"] / 2.0 - com_x)
-                dyy = (py + t["fullH"] / 2.0 - com_y)
-                cost = math.hypot(dxx / x_bias, dyy / y_bias) + rand() * step * 0.5
-                if cost < best_cost:
-                    best_cost = cost
+
+                sub = grid[py:py+gh, px:px+gw]
+                if not sub.any():
                     best = (px, py)
-            if best and found_ring < 0:
-                found_ring = r
-            r += step
+                    break
+                if not np.bitwise_and(sub, t_grid).any():
+                    best = (px, py)
+                    break
+            if best:
+                break
 
         if best:
-            t["x"] = best[0]
-            t["y"] = best[1]
-            stamp(t, best[0], best[1])
+            px, py = best
+            grid[py:py+gh, px:px+gw] = np.maximum(grid[py:py+gh, px:px+gw], t_grid)
+            t["x"] = px * GRID_STRIDE
+            t["y"] = py * GRID_STRIDE
             placed.append(t)
         else:
             t["x"] = -99999
@@ -581,12 +521,10 @@ def _cluster_bounds(arr):
     for t in arr:
         if t["x"] < -1000:
             continue
-        lbl_h = t.get("lbl_h", 0)
-        lbl_w = t.get("lbl_w", 0)
-        lx0 = t["x"] + min(0, (t["fullW"] - lbl_w) / 2.0)
-        lx1 = t["x"] + max(t["fullW"], (t["fullW"] + lbl_w) / 2.0)
+        lx0 = t["x"]
+        lx1 = t["x"] + t["fullW"]
         ly0 = t["y"]
-        ly1 = t["y"] + t["fullH"] + lbl_h
+        ly1 = t["y"] + t["fullH"]
         if lx0 < L: L = lx0
         if lx1 > R: R = lx1
         if ly0 < T2: T2 = ly0
