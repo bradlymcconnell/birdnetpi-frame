@@ -44,11 +44,18 @@ def trigger_refresh():
     cmd = [VENV_PYTHON, f"{FRAME_DIR}/display.py", "--config", CONFIG_PATH, "--force"]
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+LAST_SELECT_STATE = None
+LAST_TOGGLE_STATE = None
+
 def update_style(new_style, notify_ha=True):
+    global LAST_SELECT_STATE, LAST_TOGGLE_STATE
     new_style = new_style.lower().strip()
-    if new_style not in ("cartoon", "sketch"):
+    if new_style not in ("cartoon", "sketch", "vintage"):
         return False, f"Invalid style: {new_style}"
     
+    LAST_SELECT_STATE = new_style
+    LAST_TOGGLE_STATE = ("on" if new_style == "cartoon" else "off")
+
     with open(CONFIG_PATH, "r") as f:
         lines = f.readlines()
     
@@ -68,42 +75,61 @@ def update_style(new_style, notify_ha=True):
         f.writelines(new_lines)
     
     if notify_ha:
-        update_ha_toggle_state(new_style == "cartoon")
+        update_ha_states(new_style)
 
     trigger_refresh()
     return True, new_style
 
-def update_ha_toggle_state(is_cartoon):
+def update_ha_states(style):
     token = get_ha_token()
     if not token:
         return
+    style_cap = style.capitalize()
+    # 1. Update input_select
     try:
-        url = f"{HA_BASE_URL}/api/states/input_boolean.birdframe_cartoon_mode"
-        payload = json.dumps({
-            "state": "on" if is_cartoon else "off",
+        url_sel = f"{HA_BASE_URL}/api/states/input_select.birdframe_art_style"
+        payload_sel = json.dumps({
+            "state": style_cap,
+            "attributes": {
+                "icon": "mdi:palette-outline",
+                "friendly_name": "BirdFrame Art Style",
+                "options": ["Cartoon", "Sketch", "Vintage"]
+            }
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            url_sel, data=payload_sel,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            pass
+    except Exception as e:
+        print(f"Error updating HA input_select: {e}")
+
+    # 2. Update input_boolean toggle (on for cartoon, off for others)
+    try:
+        url_bool = f"{HA_BASE_URL}/api/states/input_boolean.birdframe_cartoon_mode"
+        payload_bool = json.dumps({
+            "state": "on" if style == "cartoon" else "off",
             "attributes": {
                 "icon": "mdi:palette-outline",
                 "friendly_name": "BirdFrame Cartoon Mode"
             }
         }).encode("utf-8")
         req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            },
+            url_bool, data=payload_bool,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             method="POST"
         )
         with urllib.request.urlopen(req, timeout=3) as resp:
             pass
     except Exception as e:
-        print(f"Error updating HA state: {e}")
+        print(f"Error updating HA input_boolean: {e}")
 
 def ha_sync_loop():
-    """Background polling loop that syncs Home Assistant toggle and button presses in real time."""
+    """Background polling loop that syncs Home Assistant select, toggle and button presses in real time."""
+    global LAST_SELECT_STATE, LAST_TOGGLE_STATE
     time.sleep(2)
-    last_toggle_state = None
     last_button_state = None
     first_run = True
 
@@ -111,56 +137,90 @@ def ha_sync_loop():
         token = get_ha_token()
         if token:
             try:
-                # 1. Check Toggle State
+                # 1. Check Select Dropdown State
+                url_select = f"{HA_BASE_URL}/api/states/input_select.birdframe_art_style"
+                req_s = urllib.request.Request(
+                    url_select,
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                )
+                try:
+                    with urllib.request.urlopen(req_s, timeout=3) as resp:
+                        s_data = json.loads(resp.read().decode())
+                        cur_select = str(s_data.get("state", "")).lower()
+                        if cur_select in ("cartoon", "sketch", "vintage"):
+                            if first_run:
+                                LAST_SELECT_STATE = cur_select
+                                LAST_TOGGLE_STATE = ("on" if cur_select == "cartoon" else "off")
+                                cfg = get_config()
+                                local_style = cfg.get("style", "sketch").lower()
+                                if local_style != cur_select:
+                                    print(f"Initial sync: Setting style to {cur_select} from HA select")
+                                    update_style(cur_select, notify_ha=False)
+                            elif LAST_SELECT_STATE is not None and cur_select != LAST_SELECT_STATE:
+                                print(f"HA Select changed from {LAST_SELECT_STATE} to {cur_select}!")
+                                update_style(cur_select, notify_ha=True)
+                            else:
+                                LAST_SELECT_STATE = cur_select
+                except Exception:
+                    pass
+
+                # 2. Check Legacy Toggle State (if select didn't fire change)
                 url_toggle = f"{HA_BASE_URL}/api/states/input_boolean.birdframe_cartoon_mode"
                 req_t = urllib.request.Request(
                     url_toggle,
                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
                 )
-                with urllib.request.urlopen(req_t, timeout=3) as resp:
-                    data = json.loads(resp.read().decode())
-                    current_ha_state = data.get("state") # 'on' or 'off'
-                    
-                    if current_ha_state in ("on", "off"):
-                        if first_run:
-                            last_toggle_state = current_ha_state
-                            # Ensure local config matches on boot
-                            cfg = get_config()
-                            local_style = cfg.get("style", "sketch").lower()
-                            expected_style = "cartoon" if current_ha_state == "on" else "sketch"
-                            if local_style != expected_style:
-                                print(f"Initial sync: Setting style to {expected_style} from HA state {current_ha_state}")
-                                update_style(expected_style, notify_ha=False)
-                        elif last_toggle_state is not None and current_ha_state != last_toggle_state:
-                            print(f"HA Toggle changed from {last_toggle_state} to {current_ha_state}!")
-                            last_toggle_state = current_ha_state
-                            target_style = "cartoon" if current_ha_state == "on" else "sketch"
-                            update_style(target_style, notify_ha=False)
-                        else:
-                            last_toggle_state = current_ha_state
+                try:
+                    with urllib.request.urlopen(req_t, timeout=3) as resp:
+                        data = json.loads(resp.read().decode())
+                        current_ha_state = data.get("state") # 'on' or 'off'
+                        
+                        if current_ha_state in ("on", "off"):
+                            if first_run and LAST_SELECT_STATE is None:
+                                LAST_TOGGLE_STATE = current_ha_state
+                                cfg = get_config()
+                                local_style = cfg.get("style", "sketch").lower()
+                                expected_style = "cartoon" if current_ha_state == "on" else "sketch"
+                                if local_style != expected_style:
+                                    print(f"Initial sync: Setting style to {expected_style} from HA toggle {current_ha_state}")
+                                    update_style(expected_style, notify_ha=False)
+                            elif LAST_TOGGLE_STATE is not None and current_ha_state != LAST_TOGGLE_STATE:
+                                print(f"HA Toggle changed from {LAST_TOGGLE_STATE} to {current_ha_state}!")
+                                if current_ha_state == "on":
+                                    update_style("cartoon", notify_ha=True)
+                                else:
+                                    cfg = get_config()
+                                    if cfg.get("style", "").lower() == "cartoon":
+                                        update_style("sketch", notify_ha=True)
+                            else:
+                                LAST_TOGGLE_STATE = current_ha_state
+                except Exception:
+                    pass
 
-                # 2. Check Refresh Button State
+                # 3. Check Refresh Button State
                 url_btn = f"{HA_BASE_URL}/api/states/input_button.birdframe_refresh_display"
                 req_b = urllib.request.Request(
                     url_btn,
                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
                 )
-                with urllib.request.urlopen(req_b, timeout=3) as resp:
-                    btn_data = json.loads(resp.read().decode())
-                    btn_state = btn_data.get("state") # timestamp of last press
-                    
-                    if first_run:
-                        last_button_state = btn_state
-                    elif last_button_state is not None and btn_state != last_button_state:
-                        print(f"HA Refresh Button pressed! Triggering screen refresh...")
-                        last_button_state = btn_state
-                        trigger_refresh()
-                    else:
-                        last_button_state = btn_state
+                try:
+                    with urllib.request.urlopen(req_b, timeout=3) as resp:
+                        btn_data = json.loads(resp.read().decode())
+                        btn_state = btn_data.get("state") # timestamp of last press
+                        
+                        if first_run:
+                            last_button_state = btn_state
+                        elif last_button_state is not None and btn_state != last_button_state:
+                            print(f"HA Refresh Button pressed! Triggering screen refresh...")
+                            last_button_state = btn_state
+                            trigger_refresh()
+                        else:
+                            last_button_state = btn_state
+                except Exception:
+                    pass
 
                 first_run = False
-            except Exception as e:
-                # Network hiccups or brief HA restart
+            except Exception:
                 pass
 
         time.sleep(1.2)
@@ -206,8 +266,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
         elif url.path in ("/api/toggle", "/toggle"):
             cfg = get_config()
-            current = cfg.get("style", "sketch")
-            next_style = "sketch" if current == "cartoon" else "cartoon"
+            current = cfg.get("style", "sketch").lower()
+            cycle = {"cartoon": "sketch", "sketch": "vintage", "vintage": "cartoon"}
+            next_style = cycle.get(current, "cartoon")
             ok, res = update_style(next_style, notify_ha=True)
             return self.send_json({"success": True, "style": res, "is_cartoon": (res == "cartoon")})
 

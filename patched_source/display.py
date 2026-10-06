@@ -24,8 +24,9 @@ import sys
 import time
 import urllib.request
 from datetime import datetime
-
-from PIL import Image, ImageChops, ImageDraw
+import math
+import random
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 try:
     import tomllib
@@ -378,48 +379,211 @@ def obtain_image(cfg, species=None):
         shoot_birdweather(out, species, title=cfg["shoot_title"], subtitle=cfg["shoot_subtitle"],
                           timeout_ms=cfg["timeout"] * 1000, bird_names=cfg["bird_names"])
         return Image.open(out).convert("RGB")
-    if cfg["shoot"]:
-        from shoot import shoot
-        out = os.path.join(os.path.expanduser(cfg["cache"]), "shot.png")
-        os.makedirs(os.path.dirname(out), exist_ok=True)
+def _get_font(font_path, size):
+    try:
+        return ImageFont.truetype(font_path, size)
+    except Exception:
+        return ImageFont.load_default()
+
+def render_native_collage(species_list, cfg, style="vintage", title=None, subtitle=None, show_names=True):
+    bg_color = (248, 246, 240)
+    text_color = (40, 35, 30)
+    subtext_color = (120, 110, 100)
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    asset_base = os.path.join(here, "assets")
+    font_base = "/home/birder/.local/share/fonts"
+    if not os.path.exists(font_base):
+        font_base = os.path.join(here, "fonts")
+
+    if style == "cartoon":
+        asset_dir = os.path.join(asset_base, "cartoon")
+        font_main = os.path.join(font_base, "FingerPaint-Regular.ttf")
+        font_title = font_main
+        bg_color = (252, 250, 245)
+    elif style == "vintage":
+        asset_dir = os.path.join(asset_base, "vintage")
+        font_main = os.path.join(font_base, "EBGaramond-Italic.ttf")
+        font_title = os.path.join(font_base, "LibreBaskerville-Italic.ttf")
+        if not os.path.exists(font_title):
+            font_title = font_main
+    else: # sketch
+        asset_dir = os.path.join(asset_base, "sketch")
+        font_main = os.path.join(font_base, "Caveat.ttf")
+        font_title = font_main
+
+    canvas = Image.new("RGB", (PANEL_W, PANEL_H), bg_color)
+    draw = ImageDraw.Draw(canvas)
+
+    pad_top = 80
+    pad_side = 80
+    
+    font_sub = _get_font(font_title, 26)
+    font_head = _get_font(font_title, 54)
+    font_labels = _get_font(font_main, 24 if style != "sketch" else 28)
+
+    # Subtitle
+    sub_text = (subtitle or "HEARD TODAY").upper()
+    sub_bbox = draw.textbbox((0, 0), sub_text, font=font_sub)
+    sub_w = sub_bbox[2] - sub_bbox[0]
+    draw.text(((PANEL_W - sub_w) // 2, pad_top), sub_text, font=font_sub, fill=subtext_color)
+
+    # Headline
+    head_text = title or "Avian Visitors"
+    head_y = pad_top + 38
+    head_bbox = draw.textbbox((0, 0), head_text, font=font_head)
+    head_w = head_bbox[2] - head_bbox[0]
+    draw.text(((PANEL_W - head_w) // 2, head_y), head_text, font=font_head, fill=text_color)
+
+    # Rule
+    rule_y = head_y + 75
+    draw.line([(PANEL_W // 2 - 120, rule_y), (PANEL_W // 2 + 120, rule_y)], fill=(190, 180, 170), width=1)
+
+    if not species_list:
+        empty_font = _get_font(font_main, 32)
+        msg = "listening for birds…"
+        m_bbox = draw.textbbox((0, 0), msg, font=empty_font)
+        draw.text(((PANEL_W - (m_bbox[2]-m_bbox[0])) // 2, PANEL_H // 2), msg, font=empty_font, fill=subtext_color)
+        return canvas
+
+    collage_top = rule_y + 40
+    collage_bottom = PANEL_H - 90
+    collage_left = pad_side
+    collage_right = PANEL_W - pad_side
+    
+    c_w = collage_right - collage_left
+    c_h = collage_bottom - collage_top
+    center_x = collage_left + c_w // 2
+    center_y = collage_top + c_h // 2 + 20
+
+    items = sorted(species_list, key=lambda s: s.get("n", 1), reverse=True)
+    num_items = len(items)
+
+    counts = [s.get("n", 1) for s in items]
+    count_exp = 0.28
+    scores = [c ** count_exp for c in counts]
+    max_score = max(scores)
+    min_score = min(scores)
+
+    if num_items <= 5:
+        max_dim, min_dim = 420, 260
+    elif num_items <= 12:
+        max_dim, min_dim = 360, 180
+    elif num_items <= 25:
+        max_dim, min_dim = 300, 140
+    else:
+        max_dim, min_dim = 240, 110
+
+    placed_boxes = []
+    placed_birds = []
+
+    def overlaps(b1, b2, pad=12):
+        return not (b1[2] + pad < b2[0] or b1[0] - pad > b2[2] or 
+                    b1[3] + pad < b2[1] or b1[1] - pad > b2[3])
+
+    for i, s in enumerate(items):
+        sci = s.get("sci", "")
+        com = s.get("com", sci)
+        score = scores[i]
+        
+        t = (score - min_score) / (max_score - min_score) if max_score > min_score else 1.0
+        target_max_dim = int(min_dim + t * (max_dim - min_dim))
+
+        slug = sci.lower().replace(" ", "-")
+        img_path = os.path.join(asset_dir, f"{slug}.png")
+        if not os.path.exists(img_path):
+            img_path = os.path.join(asset_dir, "default.png")
+            if not os.path.exists(img_path):
+                continue
+        
+        try:
+            b_img = Image.open(img_path).convert("RGBA")
+        except Exception:
+            continue
+
+        bw, bh = b_img.size
+        scale = target_max_dim / max(bw, bh)
+        nw, nh = max(20, int(bw * scale)), max(20, int(bh * scale))
+        b_img = b_img.resize((nw, nh), Image.Resampling.LANCZOS)
+
+        lbl_h = 0
+        lbl_w = 0
+        if show_names:
+            l_bbox = draw.textbbox((0, 0), com, font=font_labels)
+            lbl_w = l_bbox[2] - l_bbox[0]
+            lbl_h = (l_bbox[3] - l_bbox[1]) + 8
+
+        total_w = max(nw, lbl_w)
+        total_h = nh + lbl_h
+
+        best_pos = None
+        if i == 0:
+            bx = center_x - nw // 2
+            by = center_y - total_h // 2 - 40
+            best_pos = (bx, by)
+            box = (min(bx, center_x - total_w // 2), by, 
+                   max(bx + nw, center_x + total_w // 2), by + total_h)
+            placed_boxes.append(box)
+        else:
+            theta = (i * 2.39996) + (random.random() * 0.4 - 0.2)
+            step_r = 15
+            for step in range(1, 120):
+                r = step * step_r
+                rx = r * 1.05
+                ry = r * 1.35
+                cur_x = int(center_x + rx * math.cos(theta) - nw // 2)
+                cur_y = int(center_y + ry * math.sin(theta) - total_h // 2)
+
+                if cur_x < collage_left or cur_x + nw > collage_right:
+                    theta += 0.4
+                    continue
+                if cur_y < collage_top or cur_y + total_h > collage_bottom:
+                    theta += 0.4
+                    continue
+
+                test_box = (min(cur_x, cur_x + (nw - total_w)//2), cur_y,
+                            max(cur_x + nw, cur_x + nw + (total_w - nw)//2), cur_y + total_h)
+                
+                collision = False
+                for pb in placed_boxes:
+                    if overlaps(test_box, pb, pad=14):
+                        collision = True
+                        break
+                if not collision:
+                    best_pos = (cur_x, cur_y)
+                    placed_boxes.append(test_box)
+                    break
+                theta += 0.35
+
+        if best_pos:
+            placed_birds.append((b_img, best_pos[0], best_pos[1], com, total_w, nw, nh))
+
+    for b_img, bx, by, com, total_w, nw, nh in placed_birds:
+        canvas.paste(b_img, (bx, by), b_img)
+        if show_names:
+            l_bbox = draw.textbbox((0, 0), com, font=font_labels)
+            lw = l_bbox[2] - l_bbox[0]
+            lx = bx + (nw - lw) // 2
+            ly = by + nh + 4
+            draw.text((lx, ly), com, font=font_labels, fill=text_color)
+
+    footer_text = f"{len(placed_birds)} species heard today"
+    font_foot = _get_font(font_title, 20)
+    f_bbox = draw.textbbox((0, 0), footer_text, font=font_foot)
+    draw.text(((PANEL_W - (f_bbox[2]-f_bbox[0])) // 2, PANEL_H - 55), footer_text, font=font_foot, fill=subtext_color)
+
+    return canvas
+
+
+def obtain_image(cfg, species=None):
+    if cfg.get("shoot") or not (cfg.get("image_url") or cfg.get("image")):
         if species is None:
             species = fetch_species(cfg, _auth(cfg))
-        window_hours = _resolve_hours(cfg.get("hours", 24))
-        style = str(cfg.get("style", cfg.get("art_style", "sketch"))).lower()
-        
-        cutout_local = "/home/birder/AvianVisitors/frame/assets/cartoon" if style == "cartoon" else None
-        
-        font_cfg = str(cfg.get("font", "auto")).lower()
-        font_map = {
-            "crayon": "/home/birder/.local/share/fonts/FingerPaint-Regular.ttf",
-            "fingerpaint": "/home/birder/.local/share/fonts/FingerPaint-Regular.ttf",
-            "gloria": "/home/birder/.local/share/fonts/GloriaHallelujah-Regular.ttf",
-            "gloriahallelujah": "/home/birder/.local/share/fonts/GloriaHallelujah-Regular.ttf",
-            "gochi": "/home/birder/.local/share/fonts/GochiHand-Regular.ttf",
-            "gochihand": "/home/birder/.local/share/fonts/GochiHand-Regular.ttf",
-            "patrick": "/home/birder/.local/share/fonts/PatrickHand-Regular.ttf",
-            "patrickhand": "/home/birder/.local/share/fonts/PatrickHand-Regular.ttf",
-            "angrybirds": "/home/birder/.local/share/fonts/LuckiestGuy-Regular.ttf",
-            "luckiestguy": "/home/birder/.local/share/fonts/LuckiestGuy-Regular.ttf",
-            "comic": "/home/birder/.local/share/fonts/LuckiestGuy-Regular.ttf",
-            "caveat": "/home/birder/.local/share/fonts/Caveat.ttf",
-            "sketch": "/home/birder/.local/share/fonts/Caveat.ttf"
-        }
-        if font_cfg in font_map:
-            font_path = font_map[font_cfg]
-        elif style == "cartoon":
-            font_path = "/home/birder/.local/share/fonts/FingerPaint-Regular.ttf"
-        else:
-            font_path = "/home/birder/.local/share/fonts/Caveat.ttf"
-            
-        shoot(cfg["base_url"], out, title=cfg["shoot_title"], subtitle=cfg["shoot_subtitle"],
-              cutout_local=cutout_local, font_path=font_path,
-              headline_px=cfg["shoot_headline_px"], eyebrow_px=cfg["shoot_eyebrow_px"],
-              lowercase=cfg["shoot_lowercase"], mat=cfg["shoot_mat"],
-              small_floor=cfg["shoot_small_floor"], count_exp=cfg["shoot_count_exp"], timeout_ms=cfg["timeout"] * 1000,
-              user=cfg["basic_user"], password=cfg["basic_pass"], window_hours=window_hours,
-              species=species, bird_names=cfg["bird_names"])
-        return Image.open(out).convert("RGB")
+        style = str(cfg.get("style", cfg.get("art_style", "vintage"))).lower()
+        title = cfg.get("shoot_title") or "Avian Visitors"
+        subtitle = cfg.get("shoot_subtitle") or "Heard Today"
+        show_names = bool(cfg.get("bird_names", True))
+        return render_native_collage(species, cfg, style=style, title=title, subtitle=subtitle, show_names=show_names)
     src = cfg["image_url"] or cfg["image"]
     if not src:
         raise ValueError("set image, image_url, or shoot in config")

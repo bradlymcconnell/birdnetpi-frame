@@ -6,3 +6,4 @@ config/.birdframe/test_bg.png
 *.tmp
 *.log
 .DS_Store
+__pycache__/

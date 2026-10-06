@@ -198,7 +198,14 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
     auth = "Basic " + base64.b64encode(f"{user}:{password or ''}".encode()).decode() if user else None
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--force-color-profile=srgb", "--disable-dev-shm-usage"])
+        browser = p.chromium.launch(args=[
+            "--force-color-profile=srgb",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--no-sandbox",
+            "--js-flags=--max-old-space-size=128",
+        ])
         try:
             ctx_kw = {
                 "viewport": {"width": vw, "height": vh},
