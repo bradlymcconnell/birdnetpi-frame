@@ -526,8 +526,9 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
 
     T = _tuning(len(species_list))
     vp_area = CW * CH
-    budget = vp_area * T["packingBudgetFrac"]
-    min_area = vp_area * T["minTileAreaFrac"]
+    style_area_scale = 1.21 if style == "vintage" else 1.0
+    budget = vp_area * T["packingBudgetFrac"] * style_area_scale
+    min_area = vp_area * T["minTileAreaFrac"] * style_area_scale
 
     # Pre-load cutouts & alpha masks
     raw_tiles = []
