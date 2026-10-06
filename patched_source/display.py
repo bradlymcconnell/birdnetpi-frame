@@ -429,11 +429,13 @@ def _load_mask(slug, masks_dict):
     _MASK_DEC_CACHE[slug] = res
     return res
 
-def _tuning(n):
+def _tuning(n, cfg=None):
+    cfg = cfg or {}
     return {
-        "packingBudgetFrac": 0.44 if n <= 4 else (0.38 if n <= 12 else (0.32 if n <= 24 else 0.26)),
-        "countExp": 0.45,
-        "minTileAreaFrac": 0.012 if n <= 8 else (0.008 if n <= 20 else 0.005),
+        "packingBudgetFrac": 0.52 if n <= 4 else (0.46 if n <= 8 else (0.40 if n <= 16 else (0.35 if n <= 24 else 0.30))),
+        "countExp": float(cfg.get("shoot_count_exp", 0.22)),
+        "smallFloor": float(cfg.get("shoot_small_floor", 0.15)),
+        "minTileAreaFrac": 0.045 if n <= 4 else (0.022 if n <= 8 else (0.012 if n <= 16 else (0.008 if n <= 24 else 0.005))),
         "ellipseAspectBias": 1.2,
     }
 
@@ -524,12 +526,19 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
     collage_y0 = rule_y + 35
     GRID_STRIDE = 6
 
-    T = _tuning(len(species_list))
+    T = _tuning(len(species_list), cfg)
     vp_area = CW * CH
     # Scale vintage birds up by ~38% in linear dimension (1.90x area) to fill the 13.3" frame
     style_area_scale = 1.90 if style == "vintage" else 1.0
     budget = vp_area * T["packingBudgetFrac"] * style_area_scale
     min_area = vp_area * T["minTileAreaFrac"] * style_area_scale
+
+    # Apply rare-bird floor fraction (small_floor) matching sketch mode
+    if species_list and T["smallFloor"] > 0:
+        max_calls = max(float(s.get("n") or 1) for s in species_list)
+        floor_calls = max_calls * T["smallFloor"]
+    else:
+        floor_calls = 1.0
 
     # Pre-load cutouts & alpha masks
     raw_tiles = []
@@ -556,8 +565,9 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
         
         bw, bh = im.size
         ar = bw / float(bh)
-        n = float(s.get("n") or 1)
-        score = math.pow(max(1.0, n), T["countExp"])
+        raw_n = float(s.get("n") or 1)
+        eff_n = max(raw_n, floor_calls)
+        score = math.pow(max(1.0, eff_n), T["countExp"])
 
         com = s.get("com", sci)
         l_bbox = draw.textbbox((0, 0), com, font=font_label)
