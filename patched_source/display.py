@@ -9,6 +9,8 @@ centres and mats them, and pushes the result to the Inky Impression 13.3".
 look can be checked on any machine without the panel.
 """
 from __future__ import annotations
+import numpy as np
+import math
 
 import argparse
 import fcntl
@@ -23,7 +25,7 @@ import statistics
 import sys
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
 import random
 from PIL import Image, ImageChops, ImageDraw, ImageFont
@@ -48,6 +50,8 @@ DEFAULTS = {
     "bw_days": 7,           # BirdWeather lookback window, in days
     "bw_country": "us",     # geocoder country for the ZIP
     "hours": 24,
+    "dusk_hour": 17,
+    "dawn_hour": 7,
     "image": "",            # local PNG written by the shooter
     "image_url": "",        # or a published screenshot URL
     "shoot": False,         # or capture inline (needs a browser; the 3 A+ and Zero 2 W both handle it)
@@ -77,10 +81,42 @@ def _auth(cfg):
 
 
 # --- change detection -------------------------------------------------------
-def _resolve_hours(hours_cfg):
-    if str(hours_cfg).lower() in ('today', '0', 'day'):
+def active_night_date(dt=None, dusk_hour=17):
+    if dt is None:
+        dt = datetime.now()
+    if dt.hour < dusk_hour:
+        return (dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    return dt.strftime("%Y-%m-%d")
+
+
+def get_dusk_to_dawn_dates(dt=None, dusk_hour=17):
+    if dt is None:
+        dt = datetime.now()
+    if dt.hour < dusk_hour:
+        start_d = dt - timedelta(days=1)
+        end_d = dt
+    else:
+        start_d = dt
+        end_d = dt + timedelta(days=1)
+    return start_d, end_d
+
+
+def _resolve_hours(hours_cfg, dusk_hour=17):
+    cfg_str = str(hours_cfg).lower().strip()
+    if cfg_str in ('dusk-to-dawn', 'dusk_to_dawn', 'night', 'tonight', 'dusk'):
+        now = datetime.now()
+        if now.hour >= dusk_hour:
+            start_dt = now.replace(hour=dusk_hour, minute=0, second=0, microsecond=0)
+        else:
+            start_dt = (now - timedelta(days=1)).replace(hour=dusk_hour, minute=0, second=0, microsecond=0)
+        elapsed = (now - start_dt).total_seconds()
+        return max(1, int(math.ceil(elapsed / 3600.0)))
+    if cfg_str in ('today', '0', 'day'):
         return max(1, datetime.now().hour + 1)
-    return int(hours_cfg)
+    try:
+        return int(hours_cfg)
+    except (ValueError, TypeError):
+        return 24
 
 def slugify(sci):
     return re.sub(r"[^a-z0-9]+", "-", sci.lower()).strip("-")
@@ -93,9 +129,21 @@ def _bucket(n):
     return 8
 
 
-def fetch_recent(base, hours, timeout, auth=None):
-    h = _resolve_hours(hours)
-    url = f"{base.rstrip('/')}/avian/api/birdnet-api.php?action=recent&hours={h}"
+def fetch_recent(base, hours, timeout, auth=None, dusk_hour=17):
+    hours_mode = str(hours).lower().strip()
+    if hours_mode in ('dusk-to-dawn', 'dusk_to_dawn', 'night', 'tonight', 'dusk'):
+        now = datetime.now()
+        if now.hour >= dusk_hour:
+            start_dt = now.replace(hour=dusk_hour, minute=0, second=0, microsecond=0)
+        else:
+            start_dt = (now - timedelta(days=1)).replace(hour=dusk_hour, minute=0, second=0, microsecond=0)
+        since_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+        url = f"{base.rstrip('/')}/avian/api/birdnet-api.php?action=recent&hours=dusk-to-dawn&dusk_hour={dusk_hour}&since={urllib.parse.quote(since_str)}"
+    elif hours_mode in ('today', '0', 'day'):
+        url = f"{base.rstrip('/')}/avian/api/birdnet-api.php?action=recent&hours=today"
+    else:
+        h = _resolve_hours(hours, dusk_hour=dusk_hour)
+        url = f"{base.rstrip('/')}/avian/api/birdnet-api.php?action=recent&hours={h}"
     req = urllib.request.Request(url, headers={"User-Agent": "AvianVisitors-frame/1.0"})
     if auth:
         req.add_header("Authorization", auth)
@@ -142,7 +190,8 @@ def fetch_species(cfg, auth=None):
         if kind == "station":
             return birdweather.species_for_station(value, days=cfg["bw_days"])
         return birdweather.species_for_zip(value, country=cfg["bw_country"], days=cfg["bw_days"])
-    return fetch_recent(cfg["base_url"], cfg["hours"], cfg["timeout"], auth)
+    dusk_hour = int(cfg.get("dusk_hour", 17))
+    return fetch_recent(cfg["base_url"], cfg["hours"], cfg["timeout"], auth, dusk_hour=dusk_hour)
 
 
 # --- image ------------------------------------------------------------------
@@ -341,12 +390,18 @@ def load_state(path):
         return {"signature": None, "last_refresh": 0}
 
 
-def save_state(path, sig, when):
+def save_state(path, sig, when, last_night=None):
     path = os.path.expanduser(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"signature": sig, "last_refresh": when, "last_date": datetime.now().strftime("%Y-%m-%d")}, f)
+        data = {
+            "signature": sig,
+            "last_refresh": when,
+            "last_date": datetime.now().strftime("%Y-%m-%d"),
+            "last_night": last_night or datetime.now().strftime("%Y-%m-%d")
+        }
+        json.dump(data, f)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)  # atomic: a power cut can't leave a half-written file
@@ -754,6 +809,23 @@ def render_native_collage(species_list, cfg, style="vintage", title=None, subtit
 
 def obtain_image(cfg, species=None):
     style = str(cfg.get("style", cfg.get("art_style", "vintage"))).lower()
+    base_url = str(cfg.get("base_url", "")).lower()
+    is_bats = ("192.168.1.65" in base_url or "bat" in str(cfg.get("active_node", "")).lower() or cfg.get("hours") == "dusk-to-dawn")
+    
+    here = os.path.dirname(os.path.abspath(__file__))
+    assets_root = os.path.join(here, "assets")
+
+    if is_bats:
+        if species is None:
+            species = fetch_species(cfg, _auth(cfg))
+        if style in ("cartoon", "cave"):
+            return render_cartoon_cave_bats(species, os.path.join(assets_root, "cartoon_bats"), cfg=cfg)
+        elif style == "vintage":
+            return render_vintage_audubon_bats(species, os.path.join(assets_root, "vintage_bats"), cfg=cfg)
+        else: # "sketch", "gothic", "belfry", default
+            return render_naturalist_specimen_plate(species, os.path.join(assets_root, "gothic"), cfg=cfg)
+
+    # Otherwise Birds:
     if style == "sketch" and (cfg.get("shoot") or not (cfg.get("image_url") or cfg.get("image"))):
         from shoot import shoot
         out = os.path.join(os.path.expanduser(cfg["cache"]), "shot.png")
@@ -795,6 +867,656 @@ def obtain_image(cfg, species=None):
     return get_image(src, cfg["timeout"], _auth(cfg))
 
 
+
+def _load_font(candidates, size):
+    for fp in candidates:
+        if fp and os.path.exists(fp):
+            try:
+                return ImageFont.truetype(fp, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+FONTS_BOLD = [
+    "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Baskerville.ttc",
+    "/Library/Fonts/Garamond.ttf",
+    "/System/Library/Fonts/Times.ttc"
+]
+
+FONTS_ITALIC = [
+    "/home/birder/.local/share/fonts/LibreBaskerville-Italic.ttf",
+    "/home/birder/.local/share/fonts/EBGaramond-Italic.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf",
+    "/System/Library/Fonts/Supplemental/Baskerville.ttc"
+]
+
+def get_moon_phase(dt=None):
+    if dt is None:
+        dt = datetime.now()
+    ref = datetime(2000, 1, 6, 18, 14)
+    diff = (dt - ref).total_seconds() / 86400.0
+    synodic = 29.53058867
+    cycle = (diff % synodic) / synodic
+    angle = cycle * 2 * math.pi
+    illum = (1 - math.cos(angle)) / 2.0
+    
+    if cycle < 0.03 or cycle > 0.97:
+        phase_name = "New Moon"
+    elif cycle < 0.22:
+        phase_name = "Waxing Crescent"
+    elif cycle < 0.28:
+        phase_name = "First Quarter"
+    elif cycle < 0.47:
+        phase_name = "Waxing Gibbous"
+    elif cycle < 0.53:
+        phase_name = "Full Moon"
+    elif cycle < 0.72:
+        phase_name = "Waning Gibbous"
+    elif cycle < 0.78:
+        phase_name = "Last Quarter"
+    else:
+        phase_name = "Waning Crescent"
+        
+    return cycle, illum, phase_name
+
+
+def draw_moon_medallion(canvas, cx, cy, r=52, dt=None):
+    cycle, illum, phase_name = get_moon_phase(dt)
+    draw = ImageDraw.Draw(canvas)
+    
+    # Outer astrological rings
+    draw.ellipse([cx - r - 16, cy - r - 16, cx + r + 16, cy + r + 16], outline=(70, 55, 40, 255), width=2)
+    draw.ellipse([cx - r - 12, cy - r - 12, cx + r + 12, cy + r + 12], outline=(140, 115, 85, 180), width=1)
+    draw.ellipse([cx - r - 4, cy - r - 4, cx + r + 4, cy + r + 4], outline=(50, 40, 30, 255), width=2)
+    
+    # Tick marks around circle
+    for deg in range(0, 360, 15):
+        rad = math.radians(deg)
+        r1 = r + 5
+        r2 = r + 11 if deg % 90 == 0 else (r + 9 if deg % 45 == 0 else r + 7)
+        x1 = cx + r1 * math.cos(rad)
+        y1 = cy + r1 * math.sin(rad)
+        x2 = cx + r2 * math.cos(rad)
+        y2 = cy + r2 * math.sin(rad)
+        draw.line([x1, y1, x2, y2], fill=(60, 45, 30, 255), width=1 if deg % 45 != 0 else 2)
+        
+    # Night sky disc inside moon medallion
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(22, 28, 44, 255), outline=(40, 30, 20, 255), width=2)
+    
+    # Stars
+    np.random.seed(42)
+    for _ in range(25):
+        sx = cx + np.random.uniform(-r * 0.85, r * 0.85)
+        sy = cy + np.random.uniform(-r * 0.85, r * 0.85)
+        if (sx - cx)**2 + (sy - cy)**2 < (r - 4)**2:
+            draw.point((sx, sy), fill=(220, 225, 235, 200))
+            if np.random.rand() > 0.7:
+                draw.line([sx-1, sy, sx+1, sy], fill=(255, 255, 255, 220))
+                draw.line([sx, sy-1, sx, sy+1], fill=(255, 255, 255, 220))
+                
+    # Moon illuminated shape
+    m_size = r * 4
+    m_mask = Image.new("L", (m_size, m_size), 0)
+    m_draw = ImageDraw.Draw(m_mask)
+    mc = m_size // 2
+    mr = r * 2
+    
+    for y_rel in range(-mr, mr + 1):
+        y_sq = mr * mr - y_rel * y_rel
+        if y_sq < 0:
+            continue
+        x_limb = math.sqrt(y_sq)
+        x_term = x_limb * math.cos(cycle * 2 * math.pi)
+        
+        my = mc + y_rel
+        if cycle < 0.5:
+            x_start = mc + x_term
+            x_end = mc + x_limb
+        else:
+            x_start = mc - x_limb
+            x_end = mc + x_term
+            
+        if x_start > x_end:
+            x_start, x_end = x_end, x_start
+        m_draw.line([x_start, my, x_end, my], fill=255, width=1)
+        
+    m_mask = m_mask.resize((r * 2, r * 2), Image.Resampling.LANCZOS)
+    
+    moon_surface = Image.new("RGBA", (r * 2, r * 2), (245, 240, 222, 255))
+    s_draw = ImageDraw.Draw(moon_surface)
+    craters = [
+        (-0.2, -0.3, 0.22), (0.1, -0.1, 0.3), (-0.3, 0.2, 0.25),
+        (0.25, 0.3, 0.18), (0.0, 0.4, 0.2), (-0.1, -0.05, 0.15)
+    ]
+    for cx_f, cy_f, cr_f in craters:
+        ccx = r + cx_f * r
+        ccy = r + cy_f * r
+        ccr = cr_f * r
+        s_draw.ellipse([ccx - ccr, ccy - ccr, ccx + ccr, ccy + ccr], fill=(225, 218, 198, 255), outline=(195, 188, 168, 180), width=1)
+        
+    moon_surface.putalpha(m_mask)
+    canvas.alpha_composite(moon_surface, (cx - r, cy - r))
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(60, 45, 30, 255), width=1)
+    
+    font_sub = _load_font(FONTS_BOLD, 14)
+    p_text = f"{phase_name} • {int(illum * 100)}%"
+    bbox = draw.textbbox((0, 0), p_text, font=font_sub)
+    tw = bbox[2] - bbox[0]
+    draw.text((cx - tw // 2, cy + r + 20), p_text, fill=(45, 35, 25, 255), font=font_sub)
+
+
+def draw_thorny_border(canvas, W=1200, H=1600):
+    draw = ImageDraw.Draw(canvas)
+    margin = 35
+    x1, y1 = margin, margin
+    x2, y2 = W - margin, H - margin
+    
+    draw.rectangle([x1, y1, x2, y2], outline=(50, 38, 25, 255), width=2)
+    draw.rectangle([x1 + 6, y1 + 6, x2 - 6, y2 - 6], outline=(140, 115, 85, 160), width=1)
+    draw.rectangle([x1 + 18, y1 + 18, x2 - 18, y2 - 18], outline=(60, 45, 30, 255), width=1)
+    
+    for cx, cy in [(x1+18, y1+18), (x2-18, y1+18), (x1+18, y2-18), (x2-18, y2-18)]:
+        draw.ellipse([cx-10, cy-10, cx+10, cy+10], outline=(60, 45, 30, 255), width=2)
+        draw.ellipse([cx-5, cy-5, cx+5, cy+5], fill=(70, 50, 35, 255))
+        
+    vx1, vx2 = x1 + 25, x2 - 25
+    vy = y1 + 12
+    draw.line([vx1, vy, vx2, vy], fill=(45, 32, 20, 255), width=3)
+    for tx in range(vx1 + 30, vx2 - 30, 40):
+        tip_dir = -8 if (tx // 40) % 2 == 0 else 8
+        draw.polygon([(tx - 4, vy), (tx, vy + tip_dir), (tx + 4, vy)], fill=(45, 32, 20, 255))
+        
+    vy_b = y2 - 12
+    draw.line([vx1, vy_b, vx2, vy_b], fill=(45, 32, 20, 255), width=3)
+    for tx in range(vx1 + 30, vx2 - 30, 40):
+        tip_dir = -8 if (tx // 40) % 2 == 0 else 8
+        draw.polygon([(tx - 4, vy_b), (tx, vy_b + tip_dir), (tx + 4, vy_b)], fill=(45, 32, 20, 255))
+        
+    vy1, vy2 = y1 + 25, y2 - 25
+    vx_l = x1 + 12
+    draw.line([vx_l, vy1, vx_l, vy2], fill=(45, 32, 20, 255), width=3)
+    for ty in range(vy1 + 30, vy2 - 30, 45):
+        tip_dir = -8 if (ty // 45) % 2 == 0 else 8
+        draw.polygon([(vx_l, ty - 4), (vx_l + tip_dir, ty), (vx_l, ty + 4)], fill=(45, 32, 20, 255))
+        
+    vx_r = x2 - 12
+    draw.line([vx_r, vy1, vx_r, vy2], fill=(45, 32, 20, 255), width=3)
+    for ty in range(vy1 + 30, vy2 - 30, 45):
+        tip_dir = -8 if (ty // 45) % 2 == 0 else 8
+        draw.polygon([(vx_r, ty - 4), (vx_r + tip_dir, ty), (vx_r, ty + 4)], fill=(45, 32, 20, 255))
+
+
+def draw_thorny_perch_branch(draw, x_start, x_end, y_pos):
+    draw.line([x_start, y_pos, x_end, y_pos], fill=(50, 36, 24, 255), width=6)
+    draw.line([x_start + 4, y_pos - 1, x_end - 4, y_pos - 1], fill=(130, 105, 75, 200), width=2)
+    for bx in range(x_start + 25, x_end - 20, 35):
+        draw.line([bx, y_pos - 3, bx + 12, y_pos + 3], fill=(35, 25, 16, 255), width=1)
+    for tx in [x_start + 15, x_start + 45, x_end - 45, x_end - 15]:
+        draw.polygon([(tx - 3, y_pos - 2), (tx, y_pos - 10), (tx + 3, y_pos - 2)], fill=(45, 32, 20, 255))
+
+
+def draw_ornate_header(canvas, cx=520, cy=115, subtitle=None):
+    draw = ImageDraw.Draw(canvas)
+    font_title = _load_font(FONTS_BOLD, 46)
+    font_sub = _load_font(FONTS_ITALIC, 20)
+        
+    title = "GothicVisitors"
+    if not subtitle:
+        subtitle = "• Nocturnal Naturalist Field Plate •"
+    
+    bbox1 = draw.textbbox((0, 0), title, font=font_title)
+    tw1, th1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
+    
+    bbox2 = draw.textbbox((0, 0), subtitle, font=font_sub)
+    tw2, th2 = bbox2[2] - bbox2[0], bbox2[3] - bbox2[1]
+    
+    banner_w = max(tw1, tw2) + 120
+    banner_h = th1 + th2 + 36
+    bx1 = cx - banner_w // 2
+    by1 = cy - banner_h // 2
+    
+    draw.rounded_rectangle([bx1, by1, bx1 + banner_w, by1 + banner_h], radius=8, fill=(244, 238, 224, 255), outline=(50, 38, 25, 255), width=2)
+    draw.rounded_rectangle([bx1 + 4, by1 + 4, bx1 + banner_w - 4, by1 + banner_h - 4], radius=6, outline=(140, 115, 85, 180), width=1)
+    
+    draw.text((cx - tw1 // 2, by1 + 10), title, fill=(25, 18, 12, 255), font=font_title)
+    draw.text((cx - tw2 // 2, by1 + 10 + th1 + 8), subtitle, fill=(90, 70, 50, 255), font=font_sub)
+
+
+def create_species_plaque(com_name, sci_name, call_count, width=650, height=66, num=3):
+    plaque = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(plaque)
+    
+    draw.rounded_rectangle([2, 2, width - 3, height - 3], radius=8, fill=(245, 239, 226, 255), outline=(45, 32, 20, 255), width=2)
+    draw.rounded_rectangle([5, 5, width - 6, height - 6], radius=6, outline=(140, 115, 85, 200), width=1)
+    
+    f1_size = 21 if num >= 4 else 26
+    f2_size = 14 if num >= 4 else 18
+    font_main = _load_font(FONTS_BOLD, f1_size)
+    font_sub = _load_font(FONTS_ITALIC, f2_size)
+        
+    line1 = com_name.title()
+    count_str = f"{call_count:,} Calls Heard Tonight" if call_count > 1 else "1 Call Heard Tonight"
+    line2 = f"{count_str}   •   {sci_name}"
+    
+    b1 = draw.textbbox((0, 0), line1, font=font_main)
+    tw1, th1 = b1[2] - b1[0], b1[3] - b1[1]
+    
+    b2 = draw.textbbox((0, 0), line2, font=font_sub)
+    tw2, th2 = b2[2] - b2[0], b2[3] - b2[1]
+    
+    top_pad = 5 if num >= 4 else 7
+    line_gap = 3 if num >= 4 else 6
+    draw.text(((width - tw1) // 2, top_pad), line1, fill=(24, 16, 10, 255), font=font_main)
+    draw.text(((width - tw2) // 2, top_pad + th1 + line_gap), line2, fill=(90, 70, 50, 255), font=font_sub)
+    
+    return plaque
+
+
+def render_naturalist_specimen_plate(species_list, asset_dir="/home/birder/AvianVisitors/frame/assets/gothic", cfg=None):
+    W, H = 1200, 1600
+    canvas = Image.new("RGBA", (W, H), (247, 243, 233, 255))
+    draw = ImageDraw.Draw(canvas)
+    
+    # Outer thorny vine border framing entire plate
+    draw_thorny_border(canvas, W, H)
+    
+    # Real-time celestial lunar phase medallion
+    draw_moon_medallion(canvas, cx=1060, cy=115, r=52)
+    
+    dusk_hour = int(cfg.get("dusk_hour", 17)) if cfg else 18
+    start_d, end_d = get_dusk_to_dawn_dates(dusk_hour=dusk_hour)
+    date_span_str = f"{start_d.strftime('%b')} {start_d.day}–{end_d.day}"
+    header_subtitle = f"• Dusk to Dawn • {date_span_str} •"
+    
+    # Gothic header
+    draw_ornate_header(canvas, cx=520, cy=115, subtitle=header_subtitle)
+    
+    num = max(1, min(5, len(species_list)))
+    tier_top = 215
+    tier_bottom = 1535
+    total_avail_h = tier_bottom - tier_top
+    tier_h = total_avail_h // num
+    
+    plaque_h = 52 if num >= 4 else 64
+    avail_bat_h = tier_h - plaque_h - 10
+    
+    for i in range(num):
+        sp = species_list[i]
+        sci = sp.get("sci", "")
+        com = sp.get("com", sci)
+        n = sp.get("n", 1)
+        slug = sci.lower().replace(" ", "-")
+        genus = slug.split("-")[0] if "-" in slug else slug
+        
+        y_start = tier_top + i * tier_h
+        
+        # --- ROOSTING BAT (LEFT SIDE) ---
+        roost_path = os.path.join(asset_dir, f"{slug}.png")
+        if not os.path.exists(roost_path):
+            roost_path = os.path.join(asset_dir, f"{genus}.png")
+        if not os.path.exists(roost_path):
+            roost_path = os.path.join(asset_dir, "tadarida-brasiliensis.png")
+            
+        roost_img = Image.open(roost_path).convert("RGBA")
+        rw, rh = roost_img.size
+        # Scaled roosting bat
+        if num == 1:
+            target_rh = min(avail_bat_h - 10, 520)
+        elif num == 2:
+            target_rh = min(avail_bat_h - 10, 420)
+        elif num == 3:
+            target_rh = min(avail_bat_h - 10, 305)
+        elif num == 4:
+            target_rh = min(avail_bat_h - 10, 230)
+        else: # 5
+            target_rh = min(avail_bat_h - 10, 180)
+            
+        target_rw = int(target_rh * (rw / rh))
+        roost_scaled = roost_img.resize((target_rw, target_rh), Image.Resampling.LANCZOS)
+        
+        left_cx = 250
+        rx = left_cx - target_rw // 2
+        ry = y_start + (8 if num >= 4 else 15)
+        
+        # Horizontal thorny perch branch for claws to grip
+        branch_y = ry + 8
+        draw_thorny_perch_branch(draw, rx - 30, rx + target_rw + 30, branch_y)
+        canvas.alpha_composite(roost_scaled, (rx, ry))
+        
+        # --- FLYING BAT (RIGHT SIDE) ---
+        flight_path = os.path.join(asset_dir, f"{slug}-flight.png")
+        if not os.path.exists(flight_path):
+            flight_path = os.path.join(asset_dir, f"{genus}-flight.png")
+        if not os.path.exists(flight_path):
+            flight_path = os.path.join(asset_dir, "tadarida-brasiliensis-flight.png")
+            
+        flight_img = Image.open(flight_path).convert("RGBA")
+        fw, fh = flight_img.size
+        
+        # Scaled flight wingspan
+        if num == 1:
+            target_fw = 760
+        elif num == 2:
+            target_fw = 620
+        elif num == 3:
+            target_fw = 520
+        elif num == 4:
+            target_fw = 450
+        else: # 5
+            target_fw = 380
+            
+        target_fh = int(target_fw / (fw / fh))
+        if target_fh > avail_bat_h:
+            target_fh = avail_bat_h
+            target_fw = int(target_fh * (fw / fh))
+        flight_scaled = flight_img.resize((target_fw, target_fh), Image.Resampling.LANCZOS)
+        
+        right_cx = 780
+        fx = right_cx - target_fw // 2
+        fy = y_start + (avail_bat_h - target_fh) // 2 + (4 if num >= 4 else 5)
+        canvas.alpha_composite(flight_scaled, (fx, fy))
+        
+        # --- LARGE SPECIES PLAQUE (BELOW) ---
+        plaque_w = min(780, max(520, int(len(com) * (14 if num >= 4 else 16)) + 120))
+        plaque = create_species_plaque(com, sci, n, width=plaque_w, height=plaque_h, num=num)
+        pl_x = (W - plaque_w) // 2
+        pl_y = y_start + avail_bat_h + 6
+        canvas.alpha_composite(plaque, (pl_x, pl_y))
+        
+    site_label = cfg.get("active_node", "Battybird").split("(")[0].strip() if cfg else "Battybird"
+    footer_text = f"• {site_label} Acoustic Station • Dusk to Dawn • {date_span_str} •"
+    f_font = _load_font(FONTS_BOLD, 15)
+    bbox_f = draw.textbbox((0, 0), footer_text, font=f_font)
+    fw = bbox_f[2] - bbox_f[0]
+    draw.text(((W - fw) // 2, H - 30), footer_text, fill=(100, 80, 60, 255), font=f_font)
+    
+    return canvas.convert("RGB")
+
+
+def render_cartoon_cave_bats(species_list, asset_dir, cfg=None):
+    bg_path = os.path.join(asset_dir, "cave_background.png")
+    if os.path.exists(bg_path):
+        canvas = Image.open(bg_path).convert("RGBA").resize((PANEL_W, PANEL_H), Image.Resampling.LANCZOS)
+    else:
+        canvas = Image.new("RGBA", (PANEL_W, PANEL_H), (20, 25, 35, 255))
+    
+    draw = ImageDraw.Draw(canvas)
+    
+    head_w, head_h = 580, 95
+    hx = (PANEL_W - head_w) // 2
+    hy = 35
+    draw.rounded_rectangle([hx, hy, hx + head_w, hy + head_h], radius=16, fill=(35, 30, 45, 230), outline=(230, 200, 150), width=3)
+    
+    font_cartoon = "/home/birder/.local/share/fonts/FingerPaint-Regular.ttf"
+    if not os.path.exists(font_cartoon):
+        font_cartoon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "FingerPaint-Regular.ttf")
+    f_title = _load_font([font_cartoon], 36)
+    f_sub = _load_font([font_cartoon], 18)
+    
+    t_text = (cfg.get("shoot_title") or "Gothic Visitors") if cfg else "Gothic Visitors"
+    tb = draw.textbbox((0, 0), t_text, font=f_title)
+    draw.text((hx + (head_w - (tb[2]-tb[0]))//2, hy + 12), t_text, font=f_title, fill=(255, 240, 210))
+    
+    dusk_hour = int(cfg.get("dusk_hour", 17)) if cfg else 17
+    now = datetime.now()
+    active_date = active_night_date(now, dusk_hour=dusk_hour)
+    dt_active = datetime.strptime(active_date, "%Y-%m-%d")
+    next_day = dt_active + timedelta(days=1)
+    date_span_str = f"{dt_active.strftime('%b %d')}–{next_day.strftime('%d')}"
+    
+    sub_text = f"Heard Tonight • Dusk to Dawn • {date_span_str}"
+    sb = draw.textbbox((0, 0), sub_text, font=f_sub)
+    draw.text((hx + (head_w - (sb[2]-sb[0]))//2, hy + 58), sub_text, font=f_sub, fill=(220, 190, 150))
+    
+    N = min(len(species_list), 5) if species_list else 0
+    if N == 0:
+        empty_font = _load_font([font_cartoon], 30)
+        msg = "listening for bats in the cavern…"
+        mb = draw.textbbox((0, 0), msg, font=empty_font)
+        draw.text(((PANEL_W - (mb[2]-mb[0]))//2, PANEL_H // 2), msg, font=empty_font, fill=(230, 210, 180))
+        return canvas.convert("RGB")
+        
+    if N == 1:
+        coords = [(600, 220, 360)]
+    elif N == 2:
+        coords = [(380, 240, 310), (820, 270, 310)]
+    elif N == 3:
+        coords = [(280, 220, 270), (600, 320, 280), (920, 220, 270)]
+    elif N == 4:
+        coords = [
+            (230, 200, 235),  # Left high stalactite
+            (470, 360, 235),  # Center-left lower arch
+            (730, 200, 235),  # Center-right high stalactite
+            (970, 360, 235)   # Right lower rock overhang
+        ]
+    else: # 5 bats
+        coords = [
+            (180, 190, 215),  # Far left upper stalactite
+            (390, 340, 225),  # Mid-left lower ledge
+            (600, 180, 230),  # Center high stalactite
+            (810, 340, 225),  # Mid-right lower ledge
+            (1020, 190, 215)  # Far right upper stalactite
+        ]
+        
+    for i in range(N):
+        sp = species_list[i]
+        slug = slugify(sp["sci"])
+        fn = os.path.join(asset_dir, f"{slug}.png")
+        if not os.path.exists(fn):
+            genus = slug.split("-")[0] if "-" in slug else slug
+            fn = os.path.join(asset_dir, f"{genus}.png")
+        if not os.path.exists(fn):
+            fn = os.path.join(asset_dir, "default.png")
+        if not os.path.exists(fn):
+            for cand in ["tadarida-brasiliensis.png", "lasiurus-borealis.png", "lasiurus-seminolus.png"]:
+                cand_path = os.path.join(asset_dir, cand)
+                if os.path.exists(cand_path):
+                    fn = cand_path
+                    break
+        if not os.path.exists(fn):
+            continue
+            
+        bat_img = Image.open(fn).convert("RGBA")
+        cx, top_y, tw = coords[i]
+        scale = tw / float(bat_img.width)
+        th = int(bat_img.height * scale)
+        bat_scaled = bat_img.resize((tw, th), Image.Resampling.LANCZOS)
+        
+        bx = cx - tw // 2
+        by = top_y + 40
+        
+        foot_lx = cx - int(tw * 0.12)
+        foot_rx = cx + int(tw * 0.12)
+        anchor_x = cx
+        anchor_y = top_y - 20
+        draw.line([(anchor_x - 10, anchor_y), (foot_lx, by + 15)], fill=(60, 45, 35), width=3)
+        draw.line([(anchor_x + 10, anchor_y), (foot_rx, by + 15)], fill=(60, 45, 35), width=3)
+        
+        canvas.alpha_composite(bat_scaled, (bx, by))
+        
+        pl_w = min(210, max(195, tw + 5)) if N >= 5 else min(280, max(210, tw + 20))
+        pl_h = 58 if N >= 5 else 60
+        pl_x = cx - pl_w // 2
+        pl_y = by + th + 12
+        
+        draw.line([(cx - int(tw * 0.25), by + th - 10), (pl_x + 20, pl_y)], fill=(80, 60, 40), width=2)
+        draw.line([(cx + int(tw * 0.25), by + th - 10), (pl_x + pl_w - 20, pl_y)], fill=(80, 60, 40), width=2)
+        
+        draw.rounded_rectangle([pl_x, pl_y, pl_x + pl_w, pl_y + pl_h], radius=10, fill=(250, 242, 225, 245), outline=(70, 50, 35), width=2)
+        f_name = _load_font([font_cartoon], 14 if len(sp["com"]) > 18 else 16) if N >= 5 else _load_font([font_cartoon], 15 if len(sp["com"]) > 18 else 17)
+        f_cnt = _load_font([font_cartoon], 12 if N >= 5 else 13)
+        
+        c_com = sp["com"]
+        cb = draw.textbbox((0, 0), c_com, font=f_name)
+        draw.text((pl_x + (pl_w - (cb[2]-cb[0]))//2, pl_y + (6 if N >= 5 else 8)), c_com, font=f_name, fill=(40, 25, 15))
+        
+        calls = int(sp.get("n", 1))
+        cnt_str = f"{calls:,} Calls Tonight" if calls != 1 else "1 Call Tonight"
+        cnb = draw.textbbox((0, 0), cnt_str, font=f_cnt)
+        draw.text((pl_x + (pl_w - (cnb[2]-cnb[0]))//2, pl_y + (30 if N >= 5 else 32)), cnt_str, font=f_cnt, fill=(110, 75, 40))
+        
+    site_label = cfg.get("active_node", "Battybird").split("(")[0].strip() if cfg else "Battybird"
+    foot_text = f"• {site_label} Acoustic Station • Dusk to Dawn • {date_span_str} •"
+    f_ft = _load_font([font_cartoon], 16)
+    fb = draw.textbbox((0, 0), foot_text, font=f_ft)
+    fw = fb[2] - fb[0]
+    draw.rounded_rectangle([(PANEL_W - fw)//2 - 15, PANEL_H - 45, (PANEL_W + fw)//2 + 15, PANEL_H - 15], radius=8, fill=(30, 25, 38, 220), outline=(200, 175, 130), width=1)
+    draw.text(((PANEL_W - fw)//2, PANEL_H - 40), foot_text, font=f_ft, fill=(240, 225, 200))
+    
+    return canvas.convert("RGB")
+
+
+def render_vintage_audubon_bats(species_list, asset_dir, cfg=None):
+    bg_color = (250, 247, 240)
+    canvas = Image.new("RGB", (PANEL_W, PANEL_H), bg_color)
+    draw = ImageDraw.Draw(canvas)
+    
+    m = 25
+    draw.rectangle([m, m, PANEL_W - m, PANEL_H - m], outline=(80, 65, 50), width=3)
+    draw.rectangle([m + 8, m + 8, PANEL_W - m - 8, PANEL_H - m - 8], outline=(160, 140, 120), width=1)
+    
+    head_w = 640
+    hx = (PANEL_W - head_w) // 2
+    hy = 45
+    f_eyebrow = _load_font(FONTS_BOLD, 16)
+    f_title = _load_font(FONTS_BOLD, 36)
+    f_sub = _load_font(FONTS_ITALIC, 17)
+    
+    eyebrow = "CHIROPTERA • NOCTURNAL VISITORS"
+    eb = draw.textbbox((0, 0), eyebrow, font=f_eyebrow)
+    draw.text((hx + (head_w - (eb[2]-eb[0]))//2, hy), eyebrow, font=f_eyebrow, fill=(130, 105, 80))
+    
+    title = (cfg.get("shoot_title") or "Gothic Visitors") if cfg else "Gothic Visitors"
+    tb = draw.textbbox((0, 0), title, font=f_title)
+    draw.text((hx + (head_w - (tb[2]-tb[0]))//2, hy + 26), title, font=f_title, fill=(40, 30, 20))
+    
+    dusk_hour = int(cfg.get("dusk_hour", 17)) if cfg else 17
+    now = datetime.now()
+    active_date = active_night_date(now, dusk_hour=dusk_hour)
+    dt_active = datetime.strptime(active_date, "%Y-%m-%d")
+    next_day = dt_active + timedelta(days=1)
+    date_span_str = f"{dt_active.strftime('%B %d')}–{next_day.strftime('%d')}"
+    
+    sub = f"• Dusk to Dawn • {date_span_str} •"
+    sb = draw.textbbox((0, 0), sub, font=f_sub)
+    draw.text((hx + (head_w - (sb[2]-sb[0]))//2, hy + 72), sub, font=f_sub, fill=(100, 80, 60))
+    
+    N = min(len(species_list), 5) if species_list else 0
+    if N == 0:
+        empty_font = _load_font(FONTS_ITALIC, 28)
+        msg = "listening for nocturnal visitors…"
+        mb = draw.textbbox((0, 0), msg, font=empty_font)
+        draw.text(((PANEL_W - (mb[2]-mb[0]))//2, PANEL_H // 2), msg, font=empty_font, fill=(130, 110, 90))
+        return canvas
+        
+    if N == 1:
+        grid_cells = [(170, 180, 860, 1260)]
+    elif N == 2:
+        grid_cells = [
+            (100, 180, 1000, 630),
+            (100, 830, 1000, 630)
+        ]
+    elif N == 3:
+        grid_cells = [
+            (340, 170, 520, 640),
+            (65, 840, 520, 640),
+            (615, 840, 520, 640)
+        ]
+    elif N == 4:
+        grid_cells = [
+            (65, 170, 520, 640),    # Top-Left
+            (615, 170, 520, 640),   # Top-Right
+            (65, 840, 520, 640),    # Bottom-Left
+            (615, 840, 520, 640)    # Bottom-Right
+        ]
+    else: # 5 bats
+        grid_cells = [
+            (65, 170, 520, 640),    # Top Row - Left
+            (615, 170, 520, 640),   # Top Row - Right
+            (50, 840, 350, 660),    # Bottom Row - Left
+            (425, 840, 350, 660),   # Bottom Row - Center
+            (800, 840, 350, 660)    # Bottom Row - Right
+        ]
+        
+    for i in range(N):
+        sp = species_list[i]
+        slug = slugify(sp["sci"])
+        plate_fn = os.path.join(asset_dir, f"{slug}.png")
+        if not os.path.exists(plate_fn):
+            genus = slug.split("-")[0] if "-" in slug else slug
+            plate_fn = os.path.join(asset_dir, f"{genus}.png")
+        if not os.path.exists(plate_fn):
+            plate_fn = os.path.join(asset_dir, "default.png")
+        if not os.path.exists(plate_fn):
+            for cand in ["tadarida-brasiliensis.png", "lasiurus-borealis.png", "lasiurus-seminolus.png"]:
+                cand_path = os.path.join(asset_dir, cand)
+                if os.path.exists(cand_path):
+                    plate_fn = cand_path
+                    break
+        if not os.path.exists(plate_fn):
+            continue
+            
+        gx, gy, gw, gh = grid_cells[i]
+        draw.rectangle([gx, gy, gx + gw, gy + gh], outline=(200, 185, 165), width=1)
+        
+        plate_img = Image.open(plate_fn).convert("RGB")
+        avail_img_h = gh - 85
+        scale = min(gw / plate_img.width, avail_img_h / plate_img.height) * 0.96
+        pw = int(plate_img.width * scale)
+        ph = int(plate_img.height * scale)
+        plate_scaled = plate_img.resize((pw, ph), Image.Resampling.LANCZOS)
+        
+        px = gx + (gw - pw) // 2
+        py = gy + (avail_img_h - ph) // 2 + 5
+        canvas.paste(plate_scaled, (px, py))
+        
+        cn = sp["com"]
+        sn = sp["sci"]
+        calls = int(sp.get("n", 1))
+        
+        if gw < 400:
+            f_cname = _load_font(FONTS_BOLD, 15 if len(cn) > 18 else 16)
+            f_sname = _load_font(FONTS_ITALIC, 13)
+            f_count = _load_font(FONTS_BOLD, 12)
+            y_cname = gy + gh - 66
+            y_sname = gy + gh - 45
+            y_count = gy + gh - 24
+        elif N > 1:
+            f_cname = _load_font(FONTS_BOLD, 18)
+            f_sname = _load_font(FONTS_ITALIC, 15)
+            f_count = _load_font(FONTS_BOLD, 13)
+            y_cname = gy + gh - 68
+            y_sname = gy + gh - 46
+            y_count = gy + gh - 24
+        else:
+            f_cname = _load_font(FONTS_BOLD, 24)
+            f_sname = _load_font(FONTS_ITALIC, 19)
+            f_count = _load_font(FONTS_BOLD, 16)
+            y_cname = gy + gh - 68
+            y_sname = gy + gh - 46
+            y_count = gy + gh - 24
+            
+        cb = draw.textbbox((0, 0), cn, font=f_cname)
+        draw.text((gx + (gw - (cb[2]-cb[0]))//2, y_cname), cn, font=f_cname, fill=(35, 25, 15))
+        
+        sb = draw.textbbox((0, 0), sn, font=f_sname)
+        draw.text((gx + (gw - (sb[2]-sb[0]))//2, y_sname), sn, font=f_sname, fill=(90, 75, 60))
+        
+        cnt = f"{calls:,} Calls Heard Tonight" if calls != 1 else "1 Call Heard Tonight"
+        cntb = draw.textbbox((0, 0), cnt, font=f_count)
+        draw.text((gx + (gw - (cntb[2]-cntb[0]))//2, y_count), cnt, font=f_count, fill=(135, 105, 75))
+        
+    site_label = cfg.get("active_node", "Battybird").split("(")[0].strip() if cfg else "Battybird"
+    foot_text = f"• Plate IV • {site_label} Acoustic Station • Dusk to Dawn • {date_span_str} •"
+    f_ft = _load_font(FONTS_ITALIC, 15)
+    fb = draw.textbbox((0, 0), foot_text, font=f_ft)
+    fw = fb[2] - fb[0]
+    draw.text(((PANEL_W - fw)//2, PANEL_H - 42), foot_text, font=f_ft, fill=(120, 100, 80))
+    
+    return canvas
+
+
 def run(cfg, preview=None, force=False, use_signature=True, mat_box=False):
     now = time.time()
     state = load_state(cfg["state"])
@@ -808,7 +1530,13 @@ def run(cfg, preview=None, force=False, use_signature=True, mat_box=False):
         except Exception as e:
             print(f"signature fetch failed: {e}", file=sys.stderr)  # treat as no change
     today_str = datetime.now().strftime("%Y-%m-%d")
-    date_changed = (cfg.get("hours") == "today") and (state.get("last_date") != today_str)
+    hours_mode = str(cfg.get("hours", "")).lower().strip()
+    dusk_hour = int(cfg.get("dusk_hour", 17))
+    if hours_mode in ('dusk-to-dawn', 'dusk_to_dawn', 'night', 'tonight', 'dusk'):
+        current_night = active_night_date(datetime.now(), dusk_hour=dusk_hour)
+        date_changed = (state.get("last_night") != current_night)
+    else:
+        date_changed = (cfg.get("hours") == "today") and (state.get("last_date") != today_str)
     heal_due = now - state.get("last_refresh", 0) >= cfg["heal_hours"] * 3600
     changed = (not use_signature) or date_changed or (sig is not None and sig != state.get("signature"))
     if not force and not preview:
@@ -823,7 +1551,9 @@ def run(cfg, preview=None, force=False, use_signature=True, mat_box=False):
     try:
         img = obtain_image(cfg, species)
         style = str(cfg.get("style", cfg.get("art_style", "vintage"))).lower()
-        if style == "sketch":
+        base_url = str(cfg.get("base_url", "")).lower()
+        is_bats = ("192.168.1.65" in base_url or "bat" in str(cfg.get("active_node", "")).lower() or cfg.get("hours") == "dusk-to-dawn")
+        if style == "sketch" and not is_bats:
             img = fit_panel(img)
             img = mat_and_center(img, cfg["mat"], cfg["opening"])
         elif img.size != (PANEL_W, PANEL_H):
@@ -844,7 +1574,7 @@ def run(cfg, preview=None, force=False, use_signature=True, mat_box=False):
     except Exception as e:
         print(f"panel push failed: {e}", file=sys.stderr)
         return
-    state["last_date"] = datetime.now().strftime("%Y-%m-%d"); save_state(cfg["state"], sig if sig is not None else state.get("signature"), now)
+    current_night = active_night_date(datetime.now(), dusk_hour=dusk_hour); state["last_date"] = today_str; state["last_night"] = current_night; save_state(cfg["state"], sig if sig is not None else state.get("signature"), now, last_night=current_night)
     print("panel updated")
 
 
@@ -853,6 +1583,57 @@ def load_config(path):
     if path:
         with open(os.path.expanduser(path), "rb") as f:
             cfg.update(tomllib.load(f))
+    active_node = str(cfg.get("active_node", "")).lower()
+    if "auto" in active_node:
+        day_str = str(cfg.get("auto_day_start", "08:30")).strip()
+        night_str = str(cfg.get("auto_night_start", "17:00")).strip()
+        try:
+            dh, dm = map(int, day_str.split(":"))
+            nh, nm = map(int, night_str.split(":"))
+            day_mins = dh * 60 + dm
+            night_mins = nh * 60 + nm
+        except Exception:
+            day_mins, night_mins = 8 * 60 + 30, 17 * 60
+        now = datetime.now()
+        now_mins = now.hour * 60 + now.minute
+        eff = "birds" if (day_mins <= now_mins < night_mins) else "bats"
+        if eff == "birds":
+            cfg["base_url"] = "http://192.168.1.71"
+            cfg["hours"] = "today"
+            cfg["shoot_subtitle"] = "Heard Today"
+            cfg["shoot_title"] = cfg.get("shoot_title") or "Avian Visitors"
+            b_style = cfg.get("bird_style") or cfg.get("style", "sketch")
+            if str(b_style).lower() in ("gothic", "belfry"):
+                b_style = "sketch"
+            cfg["style"] = b_style
+        else:
+            cfg["base_url"] = "http://192.168.1.65"
+            cfg["hours"] = "dusk-to-dawn"
+            cfg["shoot_subtitle"] = "Heard Tonight"
+            cfg["shoot_title"] = cfg.get("shoot_title") or "Gothic Visitors"
+            b_style = cfg.get("bat_style") or cfg.get("style", "sketch")
+            if str(b_style).lower() in ("gothic", "belfry"):
+                b_style = "sketch"
+            cfg["style"] = b_style
+            cfg["dusk_hour"] = 17
+    elif "bat" in active_node:
+        cfg["shoot_title"] = cfg.get("shoot_title") or "Gothic Visitors"
+        if "bat_style" in cfg:
+            cfg["style"] = cfg["bat_style"]
+    elif "bird" in active_node:
+        cfg["shoot_title"] = cfg.get("shoot_title") or "Avian Visitors"
+        if "bird_style" in cfg:
+            cfg["style"] = cfg["bird_style"]
+
+    # Normalize style: strip prefixes like 'birds:' or 'bats:' and map aliases
+    if "style" in cfg:
+        s_val = str(cfg["style"]).strip().lower()
+        if ":" in s_val:
+            s_val = s_val.split(":")[-1]
+        if s_val in ("gothic", "belfry"):
+            s_val = "sketch"
+        cfg["style"] = s_val
+
     return cfg
 
 
@@ -860,6 +1641,7 @@ def main():
     ap = argparse.ArgumentParser(description="Push the collage screenshot to the Inky panel.")
     ap.add_argument("--config")
     ap.add_argument("--base-url")
+    ap.add_argument("--style", help="override rendering style (sketch, cartoon, vintage)")
     ap.add_argument("--image")
     ap.add_argument("--image-url")
     ap.add_argument("--preview", help="write a 6-ink preview PNG instead of pushing")
@@ -874,6 +1656,13 @@ def main():
         val = getattr(args, key)
         if val:
             cfg[key] = val
+    if args.style:
+        s_arg = str(args.style).strip().lower()
+        if ":" in s_arg:
+            s_arg = s_arg.split(":")[-1]
+        if s_arg in ("gothic", "belfry"):
+            s_arg = "sketch"
+        cfg["style"] = s_arg
     if args.rotate is not None:
         cfg["rotate"] = args.rotate
     # One render at a time. A manual --force colliding with the timer's run
