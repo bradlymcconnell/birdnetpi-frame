@@ -234,13 +234,13 @@ def get_auto_schedule(cfg=None):
     if cfg is None:
         cfg = get_config()
     day_str = str(cfg.get("auto_day_start", "08:30")).strip()
-    night_str = str(cfg.get("auto_night_start", "17:00")).strip()
+    night_str = str(cfg.get("auto_night_start", "18:50")).strip()
     try:
         dh, dm = map(int, day_str.split(":"))
         nh, nm = map(int, night_str.split(":"))
         return dh * 60 + dm, nh * 60 + nm
     except Exception:
-        return 8 * 60 + 30, 17 * 60
+        return 8 * 60 + 30, 18 * 60 + 50
 
 
 def resolve_node(mode_str):
@@ -250,9 +250,19 @@ def resolve_node(mode_str):
     elif "bird" in m:
         return "birds"
     else:  # Automatic (Day/Night) or auto
-        day_mins, night_mins = get_auto_schedule()
+        # Check Home Assistant sun.sun if available
+        sun_state = ha_get_entity_state("sun.sun")
         now = datetime.now()
         now_mins = now.hour * 60 + now.minute
+        day_mins, _ = get_auto_schedule()
+        if sun_state == "below_horizon":
+            return "bats"
+        elif sun_state == "above_horizon":
+            # Morning coffee window: show bats until morning cutoff (default 08:30)
+            return "birds" if now_mins >= day_mins else "bats"
+
+        # Fallback to local time schedule
+        day_mins, night_mins = get_auto_schedule()
         if day_mins <= now_mins < night_mins:
             return "birds"
         else:
@@ -450,15 +460,43 @@ def ha_sync_loop():
 
     print(f"HA Sync initialized: active_node='{LAST_NODE_SELECT}', eff='{CURRENT_EFFECTIVE_NODE}', bird='{LAST_BIRD_STYLE_SELECT}', bat='{LAST_BAT_STYLE_SELECT}', active_style='{LAST_ART_STYLE_SELECT}'")
 
+    last_sun_state = ha_get_entity_state("sun.sun")
+    last_day_minute = datetime.now().hour * 60 + datetime.now().minute
+
     while True:
         token = get_ha_token()
         now_ts = time.time()
         if token:
             try:
+                cur_sun_state = ha_get_entity_state("sun.sun")
+                now_dt = datetime.now()
+                now_m = now_dt.hour * 60 + now_dt.minute
+                day_m, _ = get_auto_schedule()
+
+                # Detect sunset transition (above_horizon -> below_horizon)
+                sunset_triggered = (last_sun_state == "above_horizon" and cur_sun_state == "below_horizon")
+                
+                # Detect morning 08:30 transition
+                morning_triggered = False
+                if last_day_minute is not None:
+                    if last_day_minute < day_m <= now_m:
+                        morning_triggered = True
+                last_day_minute = now_m
+                last_sun_state = cur_sun_state
+
                 # 1. Check Active Node Select Dropdown State
                 if now_ts >= IGNORE_HA_NODE_UNTIL:
                     cur_node_select = ha_get_entity_state("input_select.birdframe_active_node")
                     if cur_node_select:
+                        # Auto-reset manual overrides at schedule transitions
+                        if (sunset_triggered or morning_triggered) and cur_node_select != "Automatic (Day/Night)":
+                            print(f"Schedule transition event (sunset={sunset_triggered}, morning={morning_triggered}): resetting manual node '{cur_node_select}' to 'Automatic (Day/Night)'")
+                            cur_node_select = "Automatic (Day/Night)"
+                            ha_call_service("input_select", "select_option", {
+                                "entity_id": "input_select.birdframe_active_node",
+                                "option": "Automatic (Day/Night)"
+                            })
+
                         eff = resolve_node(cur_node_select)
                         mode_changed = (cur_node_select != LAST_NODE_SELECT)
                         effective_changed = (eff != CURRENT_EFFECTIVE_NODE)

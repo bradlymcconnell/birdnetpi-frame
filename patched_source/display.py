@@ -390,7 +390,7 @@ def load_state(path):
         return {"signature": None, "last_refresh": 0}
 
 
-def save_state(path, sig, when, last_night=None):
+def save_state(path, sig, when, last_night=None, last_mode=None, last_style=None, last_base_url=None, last_hours=None):
     path = os.path.expanduser(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
@@ -399,7 +399,11 @@ def save_state(path, sig, when, last_night=None):
             "signature": sig,
             "last_refresh": when,
             "last_date": datetime.now().strftime("%Y-%m-%d"),
-            "last_night": last_night or datetime.now().strftime("%Y-%m-%d")
+            "last_night": last_night or datetime.now().strftime("%Y-%m-%d"),
+            "last_mode": last_mode,
+            "last_style": last_style,
+            "last_base_url": last_base_url,
+            "last_hours": last_hours
         }
         json.dump(data, f)
         f.flush()
@@ -1132,13 +1136,22 @@ def render_naturalist_specimen_plate(species_list, asset_dir="/home/birder/Avian
     # Gothic header
     draw_ornate_header(canvas, cx=520, cy=115, subtitle=header_subtitle)
     
-    num = max(1, min(5, len(species_list)))
+    num = max(1, min(8, len(species_list)))
     tier_top = 215
     tier_bottom = 1535
     total_avail_h = tier_bottom - tier_top
     tier_h = total_avail_h // num
     
-    plaque_h = 52 if num >= 4 else 64
+    if num <= 3:
+        plaque_h = 64
+    elif num <= 5:
+        plaque_h = 52
+    elif num == 6:
+        plaque_h = 44
+    elif num == 7:
+        plaque_h = 40
+    else: # 8
+        plaque_h = 36
     avail_bat_h = tier_h - plaque_h - 10
     
     for i in range(num):
@@ -1169,8 +1182,14 @@ def render_naturalist_specimen_plate(species_list, asset_dir="/home/birder/Avian
             target_rh = min(avail_bat_h - 10, 305)
         elif num == 4:
             target_rh = min(avail_bat_h - 10, 230)
-        else: # 5
+        elif num == 5:
             target_rh = min(avail_bat_h - 10, 180)
+        elif num == 6:
+            target_rh = min(avail_bat_h - 8, 145)
+        elif num == 7:
+            target_rh = min(avail_bat_h - 6, 125)
+        else: # 8
+            target_rh = min(avail_bat_h - 6, 110)
             
         target_rw = int(target_rh * (rw / rh))
         roost_scaled = roost_img.resize((target_rw, target_rh), Image.Resampling.LANCZOS)
@@ -1203,8 +1222,14 @@ def render_naturalist_specimen_plate(species_list, asset_dir="/home/birder/Avian
             target_fw = 520
         elif num == 4:
             target_fw = 450
-        else: # 5
+        elif num == 5:
             target_fw = 380
+        elif num == 6:
+            target_fw = 340
+        elif num == 7:
+            target_fw = 300
+        else: # 8
+            target_fw = 270
             
         target_fh = int(target_fw / (fw / fh))
         if target_fh > avail_bat_h:
@@ -1225,7 +1250,8 @@ def render_naturalist_specimen_plate(species_list, asset_dir="/home/birder/Avian
         canvas.alpha_composite(plaque, (pl_x, pl_y))
         
     site_label = cfg.get("active_node", "Battybird").split("(")[0].strip() if cfg else "Battybird"
-    footer_text = f"• {site_label} Acoustic Station • Dusk to Dawn • {date_span_str} •"
+    total_calls = sum(int(s.get("n", 1)) for s in species_list) if species_list else 0
+    footer_text = f"• {site_label} Acoustic Station • Dusk to Dawn • {num} Species • {total_calls:,} Calls Tonight •"
     f_font = _load_font(FONTS_BOLD, 15)
     bbox_f = draw.textbbox((0, 0), footer_text, font=f_font)
     fw = bbox_f[2] - bbox_f[0]
@@ -1269,7 +1295,7 @@ def render_cartoon_cave_bats(species_list, asset_dir, cfg=None):
     sb = draw.textbbox((0, 0), sub_text, font=f_sub)
     draw.text((hx + (head_w - (sb[2]-sb[0]))//2, hy + 58), sub_text, font=f_sub, fill=(220, 190, 150))
     
-    N = min(len(species_list), 5) if species_list else 0
+    N = min(len(species_list), 8) if species_list else 0
     if N == 0:
         empty_font = _load_font([font_cartoon], 30)
         msg = "listening for bats in the cavern…"
@@ -1290,13 +1316,49 @@ def render_cartoon_cave_bats(species_list, asset_dir, cfg=None):
             (730, 200, 235),  # Center-right high stalactite
             (970, 360, 235)   # Right lower rock overhang
         ]
-    else: # 5 bats
+    elif N == 5:
         coords = [
             (180, 190, 215),  # Far left upper stalactite
             (390, 340, 225),  # Mid-left lower ledge
             (600, 180, 230),  # Center high stalactite
             (810, 340, 225),  # Mid-right lower ledge
             (1020, 190, 215)  # Far right upper stalactite
+        ]
+    elif N == 6:
+        coords = [
+            # Row 1 (Upper Cave Ceiling - 3 bats)
+            (250, 180, 220),
+            (600, 240, 225),
+            (950, 180, 220),
+            # Row 2 (Mid-Cave Cavern - 3 bats)
+            (250, 800, 220),
+            (600, 840, 225),
+            (950, 800, 220)
+        ]
+    elif N == 7:
+        coords = [
+            # Row 1 (Upper Cave Ceiling - 4 bats)
+            (180, 175, 200),
+            (460, 230, 205),
+            (740, 175, 200),
+            (1020, 230, 205),
+            # Row 2 (Mid-Cave Cavern - 3 bats)
+            (280, 810, 215),
+            (600, 840, 220),
+            (920, 810, 215)
+        ]
+    else: # 8 bats
+        coords = [
+            # Row 1 (Upper Cave Ceiling - 4 bats)
+            (180, 175, 200),
+            (460, 230, 205),
+            (740, 175, 200),
+            (1020, 230, 205),
+            # Row 2 (Mid-Cave Cavern - 4 bats)
+            (180, 820, 200),
+            (460, 870, 205),
+            (740, 820, 200),
+            (1020, 870, 205)
         ]
         
     for i in range(N):
@@ -1326,6 +1388,14 @@ def render_cartoon_cave_bats(species_list, asset_dir, cfg=None):
         bx = cx - tw // 2
         by = top_y + 40
         
+        # If in row 2 (top_y > 500), draw stalactite rock anchor above
+        if top_y > 500:
+            draw.polygon([
+                (cx - 50, top_y - 60), (cx + 50, top_y - 60),
+                (cx + 20, top_y - 15), (cx - 20, top_y - 15)
+            ], fill=(30, 26, 36, 240), outline=(55, 45, 60, 255))
+            draw.line([(cx - 45, top_y - 58), (cx - 18, top_y - 18)], fill=(65, 55, 75, 180), width=2)
+            
         foot_lx = cx - int(tw * 0.12)
         foot_rx = cx + int(tw * 0.12)
         anchor_x = cx
@@ -1335,7 +1405,7 @@ def render_cartoon_cave_bats(species_list, asset_dir, cfg=None):
         
         canvas.alpha_composite(bat_scaled, (bx, by))
         
-        pl_w = min(210, max(195, tw + 5)) if N >= 5 else min(280, max(210, tw + 20))
+        pl_w = min(220, max(195, tw + 5)) if N >= 5 else min(280, max(210, tw + 20))
         pl_h = 58 if N >= 5 else 60
         pl_x = cx - pl_w // 2
         pl_y = by + th + 12
@@ -1357,7 +1427,8 @@ def render_cartoon_cave_bats(species_list, asset_dir, cfg=None):
         draw.text((pl_x + (pl_w - (cnb[2]-cnb[0]))//2, pl_y + (30 if N >= 5 else 32)), cnt_str, font=f_cnt, fill=(110, 75, 40))
         
     site_label = cfg.get("active_node", "Battybird").split("(")[0].strip() if cfg else "Battybird"
-    foot_text = f"• {site_label} Acoustic Station • Dusk to Dawn • {date_span_str} •"
+    total_calls = sum(int(s.get("n", 1)) for s in species_list) if species_list else 0
+    foot_text = f"• {site_label} Acoustic Station • Dusk to Dawn • {N} Species • {total_calls:,} Calls Tonight •"
     f_ft = _load_font([font_cartoon], 16)
     fb = draw.textbbox((0, 0), foot_text, font=f_ft)
     fw = fb[2] - fb[0]
@@ -1402,7 +1473,7 @@ def render_vintage_audubon_bats(species_list, asset_dir, cfg=None):
     sb = draw.textbbox((0, 0), sub, font=f_sub)
     draw.text((hx + (head_w - (sb[2]-sb[0]))//2, hy + 72), sub, font=f_sub, fill=(100, 80, 60))
     
-    N = min(len(species_list), 5) if species_list else 0
+    N = min(len(species_list), 8) if species_list else 0
     if N == 0:
         empty_font = _load_font(FONTS_ITALIC, 28)
         msg = "listening for nocturnal visitors…"
@@ -1430,13 +1501,49 @@ def render_vintage_audubon_bats(species_list, asset_dir, cfg=None):
             (65, 840, 520, 640),    # Bottom-Left
             (615, 840, 520, 640)    # Bottom-Right
         ]
-    else: # 5 bats
+    elif N == 5:
         grid_cells = [
             (65, 170, 520, 640),    # Top Row - Left
             (615, 170, 520, 640),   # Top Row - Right
             (50, 840, 350, 660),    # Bottom Row - Left
             (425, 840, 350, 660),   # Bottom Row - Center
             (800, 840, 350, 660)    # Bottom Row - Right
+        ]
+    elif N == 6:
+        grid_cells = [
+            # Top Row - 3 plates
+            (50, 170, 350, 640),
+            (425, 170, 350, 640),
+            (800, 170, 350, 640),
+            # Bottom Row - 3 plates
+            (50, 840, 350, 640),
+            (425, 840, 350, 640),
+            (800, 840, 350, 640)
+        ]
+    elif N == 7:
+        grid_cells = [
+            # Top Row - 3 plates
+            (50, 170, 350, 640),
+            (425, 170, 350, 640),
+            (800, 170, 350, 640),
+            # Bottom Row - 4 plates
+            (30, 840, 260, 640),
+            (320, 840, 260, 640),
+            (610, 840, 260, 640),
+            (900, 840, 260, 640)
+        ]
+    else: # 8 bats
+        grid_cells = [
+            # Top Row - 4 plates
+            (30, 170, 260, 640),
+            (320, 170, 260, 640),
+            (610, 170, 260, 640),
+            (900, 170, 260, 640),
+            # Bottom Row - 4 plates
+            (30, 840, 260, 640),
+            (320, 840, 260, 640),
+            (610, 840, 260, 640),
+            (900, 840, 260, 640)
         ]
         
     for i in range(N):
@@ -1475,7 +1582,14 @@ def render_vintage_audubon_bats(species_list, asset_dir, cfg=None):
         sn = sp["sci"]
         calls = int(sp.get("n", 1))
         
-        if gw < 400:
+        if gw < 300:
+            f_cname = _load_font(FONTS_BOLD, 13 if len(cn) > 18 else 14)
+            f_sname = _load_font(FONTS_ITALIC, 11)
+            f_count = _load_font(FONTS_BOLD, 10)
+            y_cname = gy + gh - 62
+            y_sname = gy + gh - 43
+            y_count = gy + gh - 24
+        elif gw < 400:
             f_cname = _load_font(FONTS_BOLD, 15 if len(cn) > 18 else 16)
             f_sname = _load_font(FONTS_ITALIC, 13)
             f_count = _load_font(FONTS_BOLD, 12)
@@ -1508,7 +1622,8 @@ def render_vintage_audubon_bats(species_list, asset_dir, cfg=None):
         draw.text((gx + (gw - (cntb[2]-cntb[0]))//2, y_count), cnt, font=f_count, fill=(135, 105, 75))
         
     site_label = cfg.get("active_node", "Battybird").split("(")[0].strip() if cfg else "Battybird"
-    foot_text = f"• Plate IV • {site_label} Acoustic Station • Dusk to Dawn • {date_span_str} •"
+    total_calls = sum(int(s.get("n", 1)) for s in species_list) if species_list else 0
+    foot_text = f"• Plate IV • {site_label} Acoustic Station • Dusk to Dawn • {N} Species • {total_calls:,} Calls Tonight •"
     f_ft = _load_font(FONTS_ITALIC, 15)
     fb = draw.textbbox((0, 0), foot_text, font=f_ft)
     fw = fb[2] - fb[0]
@@ -1538,7 +1653,11 @@ def run(cfg, preview=None, force=False, use_signature=True, mat_box=False):
     else:
         date_changed = (cfg.get("hours") == "today") and (state.get("last_date") != today_str)
     heal_due = now - state.get("last_refresh", 0) >= cfg["heal_hours"] * 3600
-    changed = (not use_signature) or date_changed or (sig is not None and sig != state.get("signature"))
+    mode_changed = (state.get("last_mode") != cfg.get("active_node"))
+    style_changed = (state.get("last_style") != cfg.get("style"))
+    base_url_changed = (state.get("last_base_url") != cfg.get("base_url"))
+    hours_changed = (state.get("last_hours") != cfg.get("hours"))
+    changed = ((not use_signature) or date_changed or mode_changed or style_changed or base_url_changed or hours_changed or (sig is not None and sig != state.get("signature")))
     if not force and not preview:
         if in_quiet_hours(cfg, datetime.now().hour):
             print("quiet hours; skip")
@@ -1574,7 +1693,17 @@ def run(cfg, preview=None, force=False, use_signature=True, mat_box=False):
     except Exception as e:
         print(f"panel push failed: {e}", file=sys.stderr)
         return
-    current_night = active_night_date(datetime.now(), dusk_hour=dusk_hour); state["last_date"] = today_str; state["last_night"] = current_night; save_state(cfg["state"], sig if sig is not None else state.get("signature"), now, last_night=current_night)
+    current_night = active_night_date(datetime.now(), dusk_hour=dusk_hour)
+    state["last_date"] = today_str
+    state["last_night"] = current_night
+    state["last_mode"] = cfg.get("active_node")
+    state["last_style"] = cfg.get("style")
+    state["last_base_url"] = cfg.get("base_url")
+    state["last_hours"] = cfg.get("hours")
+    save_state(cfg["state"], sig if sig is not None else state.get("signature"), now,
+               last_night=current_night, last_mode=cfg.get("active_node"),
+               last_style=cfg.get("style"), last_base_url=cfg.get("base_url"),
+               last_hours=cfg.get("hours"))
     print("panel updated")
 
 
@@ -1585,18 +1714,39 @@ def load_config(path):
             cfg.update(tomllib.load(f))
     active_node = str(cfg.get("active_node", "")).lower()
     if "auto" in active_node:
-        day_str = str(cfg.get("auto_day_start", "08:30")).strip()
-        night_str = str(cfg.get("auto_night_start", "17:00")).strip()
-        try:
-            dh, dm = map(int, day_str.split(":"))
-            nh, nm = map(int, night_str.split(":"))
-            day_mins = dh * 60 + dm
-            night_mins = nh * 60 + nm
-        except Exception:
-            day_mins, night_mins = 8 * 60 + 30, 17 * 60
-        now = datetime.now()
-        now_mins = now.hour * 60 + now.minute
-        eff = "birds" if (day_mins <= now_mins < night_mins) else "bats"
+        eff = None
+        ha_token_path = os.path.expanduser("~/.birdframe/ha_token")
+        if os.path.exists(ha_token_path):
+            try:
+                with open(ha_token_path, "r") as tf:
+                    tok = tf.read().strip()
+                req = urllib.request.Request("http://192.168.1.81:8123/api/states/sun.sun", headers={"Authorization": f"Bearer {tok}"})
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    sun_data = json.loads(resp.read().decode())
+                    sun_state = sun_data.get("state")
+                    now = datetime.now()
+                    now_mins = now.hour * 60 + now.minute
+                    day_mins = 8 * 60 + 30
+                    if sun_state == "below_horizon":
+                        eff = "bats"
+                    elif sun_state == "above_horizon":
+                        # Morning coffee window: keep bats until 08:30 AM
+                        eff = "birds" if now_mins >= day_mins else "bats"
+            except Exception:
+                pass
+        if not eff:
+            day_str = str(cfg.get("auto_day_start", "08:30")).strip()
+            night_str = str(cfg.get("auto_night_start", "18:50")).strip()
+            try:
+                dh, dm = map(int, day_str.split(":"))
+                nh, nm = map(int, night_str.split(":"))
+                day_mins = dh * 60 + dm
+                night_mins = nh * 60 + nm
+            except Exception:
+                day_mins, night_mins = 8 * 60 + 30, 18 * 60 + 50
+            now = datetime.now()
+            now_mins = now.hour * 60 + now.minute
+            eff = "birds" if (day_mins <= now_mins < night_mins) else "bats"
         if eff == "birds":
             cfg["base_url"] = "http://192.168.1.71"
             cfg["hours"] = "today"
