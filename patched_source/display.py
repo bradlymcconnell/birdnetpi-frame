@@ -1094,8 +1094,14 @@ def create_species_plaque(com_name, sci_name, call_count, width=650, height=66, 
     draw.rounded_rectangle([2, 2, width - 3, height - 3], radius=8, fill=(245, 239, 226, 255), outline=(45, 32, 20, 255), width=2)
     draw.rounded_rectangle([5, 5, width - 6, height - 6], radius=6, outline=(140, 115, 85, 200), width=1)
     
-    f1_size = 21 if num >= 4 else 26
-    f2_size = 14 if num >= 4 else 18
+    if height <= 38:
+        f1_size, f2_size, top_pad, line_gap = 14, 10, 3, 2
+    elif height <= 44:
+        f1_size, f2_size, top_pad, line_gap = 16, 11, 4, 2
+    elif num >= 4 or height <= 54:
+        f1_size, f2_size, top_pad, line_gap = 20, 13, 5, 3
+    else:
+        f1_size, f2_size, top_pad, line_gap = 26, 18, 7, 6
     font_main = _load_font(FONTS_BOLD, f1_size)
     font_sub = _load_font(FONTS_ITALIC, f2_size)
         
@@ -1109,8 +1115,6 @@ def create_species_plaque(com_name, sci_name, call_count, width=650, height=66, 
     b2 = draw.textbbox((0, 0), line2, font=font_sub)
     tw2, th2 = b2[2] - b2[0], b2[3] - b2[1]
     
-    top_pad = 5 if num >= 4 else 7
-    line_gap = 3 if num >= 4 else 6
     draw.text(((width - tw1) // 2, top_pad), line1, fill=(24, 16, 10, 255), font=font_main)
     draw.text(((width - tw2) // 2, top_pad + th1 + line_gap), line2, fill=(90, 70, 50, 255), font=font_sub)
     
@@ -1136,118 +1140,195 @@ def render_naturalist_specimen_plate(species_list, asset_dir="/home/birder/Avian
     # Gothic header
     draw_ornate_header(canvas, cx=520, cy=115, subtitle=header_subtitle)
     
-    num = max(1, min(8, len(species_list)))
+    num = max(1, min(16, len(species_list)))
     tier_top = 215
     tier_bottom = 1535
     total_avail_h = tier_bottom - tier_top
-    tier_h = total_avail_h // num
     
-    if num <= 3:
-        plaque_h = 64
-    elif num <= 5:
-        plaque_h = 52
-    elif num == 6:
-        plaque_h = 44
-    elif num == 7:
-        plaque_h = 40
-    else: # 8
-        plaque_h = 36
-    avail_bat_h = tier_h - plaque_h - 10
-    
-    for i in range(num):
-        sp = species_list[i]
-        sci = sp.get("sci", "")
-        com = sp.get("com", sci)
-        n = sp.get("n", 1)
-        slug = sci.lower().replace(" ", "-")
-        genus = slug.split("-")[0] if "-" in slug else slug
-        
-        y_start = tier_top + i * tier_h
-        
-        # --- ROOSTING BAT (LEFT SIDE) ---
-        roost_path = os.path.join(asset_dir, f"{slug}.png")
-        if not os.path.exists(roost_path):
-            roost_path = os.path.join(asset_dir, f"{genus}.png")
-        if not os.path.exists(roost_path):
-            roost_path = os.path.join(asset_dir, "tadarida-brasiliensis.png")
-            
-        roost_img = Image.open(roost_path).convert("RGBA")
-        rw, rh = roost_img.size
-        # Scaled roosting bat
-        if num == 1:
-            target_rh = min(avail_bat_h - 10, 520)
-        elif num == 2:
-            target_rh = min(avail_bat_h - 10, 420)
-        elif num == 3:
-            target_rh = min(avail_bat_h - 10, 305)
-        elif num == 4:
-            target_rh = min(avail_bat_h - 10, 230)
-        elif num == 5:
-            target_rh = min(avail_bat_h - 10, 180)
+    if num <= 8:
+        tier_h = total_avail_h // num
+        if num <= 3:
+            plaque_h = 64
+        elif num <= 5:
+            plaque_h = 52
         elif num == 6:
-            target_rh = min(avail_bat_h - 8, 145)
+            plaque_h = 44
         elif num == 7:
-            target_rh = min(avail_bat_h - 6, 125)
+            plaque_h = 40
         else: # 8
-            target_rh = min(avail_bat_h - 6, 110)
+            plaque_h = 36
+        avail_bat_h = tier_h - plaque_h - 10
+        
+        for i in range(num):
+            sp = species_list[i]
+            sci = sp.get("sci", "")
+            com = sp.get("com", sci)
+            n = sp.get("n", 1)
+            slug = sci.lower().replace(" ", "-")
+            genus = slug.split("-")[0] if "-" in slug else slug
             
-        target_rw = int(target_rh * (rw / rh))
-        roost_scaled = roost_img.resize((target_rw, target_rh), Image.Resampling.LANCZOS)
-        
-        left_cx = 250
-        rx = left_cx - target_rw // 2
-        ry = y_start + (8 if num >= 4 else 15)
-        
-        # Horizontal thorny perch branch for claws to grip
-        branch_y = ry + 8
-        draw_thorny_perch_branch(draw, rx - 30, rx + target_rw + 30, branch_y)
-        canvas.alpha_composite(roost_scaled, (rx, ry))
-        
-        # --- FLYING BAT (RIGHT SIDE) ---
-        flight_path = os.path.join(asset_dir, f"{slug}-flight.png")
-        if not os.path.exists(flight_path):
-            flight_path = os.path.join(asset_dir, f"{genus}-flight.png")
-        if not os.path.exists(flight_path):
-            flight_path = os.path.join(asset_dir, "tadarida-brasiliensis-flight.png")
+            y_start = tier_top + i * tier_h
             
-        flight_img = Image.open(flight_path).convert("RGBA")
-        fw, fh = flight_img.size
-        
-        # Scaled flight wingspan
-        if num == 1:
-            target_fw = 760
-        elif num == 2:
-            target_fw = 620
-        elif num == 3:
-            target_fw = 520
-        elif num == 4:
-            target_fw = 450
-        elif num == 5:
-            target_fw = 380
-        elif num == 6:
-            target_fw = 340
-        elif num == 7:
-            target_fw = 300
-        else: # 8
-            target_fw = 270
+            # --- ROOSTING BAT (LEFT SIDE) ---
+            roost_path = os.path.join(asset_dir, f"{slug}.png")
+            if not os.path.exists(roost_path):
+                roost_path = os.path.join(asset_dir, f"{genus}.png")
+            if not os.path.exists(roost_path):
+                roost_path = os.path.join(asset_dir, "tadarida-brasiliensis.png")
+                
+            roost_img = Image.open(roost_path).convert("RGBA")
+            rw, rh = roost_img.size
+            if num == 1:
+                target_rh = min(avail_bat_h - 10, 520)
+            elif num == 2:
+                target_rh = min(avail_bat_h - 10, 420)
+            elif num == 3:
+                target_rh = min(avail_bat_h - 10, 305)
+            elif num == 4:
+                target_rh = min(avail_bat_h - 10, 230)
+            elif num == 5:
+                target_rh = min(avail_bat_h - 10, 180)
+            elif num == 6:
+                target_rh = min(avail_bat_h - 8, 145)
+            elif num == 7:
+                target_rh = min(avail_bat_h - 6, 125)
+            else: # 8
+                target_rh = min(avail_bat_h - 6, 110)
+                
+            target_rw = int(target_rh * (rw / rh))
+            roost_scaled = roost_img.resize((target_rw, target_rh), Image.Resampling.LANCZOS)
             
-        target_fh = int(target_fw / (fw / fh))
-        if target_fh > avail_bat_h:
-            target_fh = avail_bat_h
-            target_fw = int(target_fh * (fw / fh))
-        flight_scaled = flight_img.resize((target_fw, target_fh), Image.Resampling.LANCZOS)
+            left_cx = 250
+            rx = left_cx - target_rw // 2
+            ry = y_start + (8 if num >= 4 else 15)
+            
+            branch_y = ry + 8
+            draw_thorny_perch_branch(draw, rx - 30, rx + target_rw + 30, branch_y)
+            canvas.alpha_composite(roost_scaled, (rx, ry))
+            
+            # --- FLYING BAT (RIGHT SIDE) ---
+            flight_path = os.path.join(asset_dir, f"{slug}-flight.png")
+            if not os.path.exists(flight_path):
+                flight_path = os.path.join(asset_dir, f"{genus}-flight.png")
+            if not os.path.exists(flight_path):
+                flight_path = os.path.join(asset_dir, "tadarida-brasiliensis-flight.png")
+                
+            flight_img = Image.open(flight_path).convert("RGBA")
+            fw, fh = flight_img.size
+            
+            if num == 1:
+                target_fw = 760
+            elif num == 2:
+                target_fw = 620
+            elif num == 3:
+                target_fw = 520
+            elif num == 4:
+                target_fw = 450
+            elif num == 5:
+                target_fw = 380
+            elif num == 6:
+                target_fw = 340
+            elif num == 7:
+                target_fw = 300
+            else: # 8
+                target_fw = 270
+                
+            target_fh = int(target_fw / (fw / fh))
+            if target_fh > avail_bat_h:
+                target_fh = avail_bat_h
+                target_fw = int(target_fh * (fw / fh))
+            flight_scaled = flight_img.resize((target_fw, target_fh), Image.Resampling.LANCZOS)
+            
+            right_cx = 780
+            fx = right_cx - target_fw // 2
+            fy = y_start + (avail_bat_h - target_fh) // 2 + (4 if num >= 4 else 5)
+            canvas.alpha_composite(flight_scaled, (fx, fy))
+            
+            # --- LARGE SPECIES PLAQUE (BELOW) ---
+            plaque_w = min(780, max(520, int(len(com) * (14 if num >= 4 else 16)) + 120))
+            plaque = create_species_plaque(com, sci, n, width=plaque_w, height=plaque_h, num=num)
+            pl_x = (W - plaque_w) // 2
+            pl_y = y_start + avail_bat_h + 6
+            canvas.alpha_composite(plaque, (pl_x, pl_y))
+    else:
+        # 2-column split specimen plate layout for 9 to 16 bat species
+        num_rows = (num + 1) // 2
+        tier_h = total_avail_h // num_rows
+        plaque_h = 44 if num_rows <= 6 else (40 if num_rows == 7 else 36)
+        avail_bat_h = tier_h - plaque_h - 8
         
-        right_cx = 780
-        fx = right_cx - target_fw // 2
-        fy = y_start + (avail_bat_h - target_fh) // 2 + (4 if num >= 4 else 5)
-        canvas.alpha_composite(flight_scaled, (fx, fy))
+        # Subtle vertical naturalist divider between left and right columns
+        div_bottom = tier_top + (num // 2) * tier_h - 8
+        draw.line([(W // 2, tier_top + 10), (W // 2, div_bottom)], fill=(150, 125, 95, 160), width=1)
         
-        # --- LARGE SPECIES PLAQUE (BELOW) ---
-        plaque_w = min(780, max(520, int(len(com) * (14 if num >= 4 else 16)) + 120))
-        plaque = create_species_plaque(com, sci, n, width=plaque_w, height=plaque_h, num=num)
-        pl_x = (W - plaque_w) // 2
-        pl_y = y_start + avail_bat_h + 6
-        canvas.alpha_composite(plaque, (pl_x, pl_y))
+        for i in range(num):
+            sp = species_list[i]
+            sci = sp.get("sci", "")
+            com = sp.get("com", sci)
+            n = sp.get("n", 1)
+            slug = sci.lower().replace(" ", "-")
+            genus = slug.split("-")[0] if "-" in slug else slug
+            
+            row_idx = i // 2
+            col_idx = i % 2
+            y_start = tier_top + row_idx * tier_h
+            
+            if i == num - 1 and num % 2 == 1:
+                cell_x = (W - 540) // 2
+            else:
+                cell_x = 45 if col_idx == 0 else 615
+            cell_w = 540
+            
+            # --- ROOSTING BAT (LEFT HALF OF CELL) ---
+            roost_path = os.path.join(asset_dir, f"{slug}.png")
+            if not os.path.exists(roost_path):
+                roost_path = os.path.join(asset_dir, f"{genus}.png")
+            if not os.path.exists(roost_path):
+                roost_path = os.path.join(asset_dir, "tadarida-brasiliensis.png")
+                
+            roost_img = Image.open(roost_path).convert("RGBA")
+            rw, rh = roost_img.size
+            max_rh = 175 if num_rows == 5 else (145 if num_rows == 6 else (125 if num_rows == 7 else 108))
+            target_rh = min(avail_bat_h - 6, max_rh)
+            target_rw = int(target_rh * (rw / rh))
+            if target_rw > 150:
+                target_rw = 150
+                target_rh = int(target_rw * (rh / rw))
+            roost_scaled = roost_img.resize((target_rw, target_rh), Image.Resampling.LANCZOS)
+            
+            left_cx = cell_x + 120
+            rx = left_cx - target_rw // 2
+            ry = y_start + 6
+            draw_thorny_perch_branch(draw, rx - 18, rx + target_rw + 18, ry + 6)
+            canvas.alpha_composite(roost_scaled, (rx, ry))
+            
+            # --- FLYING BAT (RIGHT HALF OF CELL) ---
+            flight_path = os.path.join(asset_dir, f"{slug}-flight.png")
+            if not os.path.exists(flight_path):
+                flight_path = os.path.join(asset_dir, f"{genus}-flight.png")
+            if not os.path.exists(flight_path):
+                flight_path = os.path.join(asset_dir, "tadarida-brasiliensis-flight.png")
+                
+            flight_img = Image.open(flight_path).convert("RGBA")
+            fw, fh = flight_img.size
+            target_fw = 265 if num_rows <= 6 else (245 if num_rows == 7 else 225)
+            target_fh = int(target_fw / (fw / fh))
+            if target_fh > avail_bat_h - 4:
+                target_fh = avail_bat_h - 4
+                target_fw = int(target_fh * (fw / fh))
+            flight_scaled = flight_img.resize((target_fw, target_fh), Image.Resampling.LANCZOS)
+            
+            right_cx = cell_x + 375
+            fx = right_cx - target_fw // 2
+            fy = y_start + (avail_bat_h - target_fh) // 2 + 4
+            canvas.alpha_composite(flight_scaled, (fx, fy))
+            
+            # --- COMPACT SPECIES PLAQUE (CENTERED BELOW CELL) ---
+            plaque_w = min(510, max(410, int(len(com) * 12) + 120))
+            plaque = create_species_plaque(com, sci, n, width=plaque_w, height=plaque_h, num=num)
+            pl_x = cell_x + (cell_w - plaque_w) // 2
+            pl_y = y_start + avail_bat_h + 4
+            canvas.alpha_composite(plaque, (pl_x, pl_y))
         
     site_label = cfg.get("active_node", "Battybird").split("(")[0].strip() if cfg else "Battybird"
     total_calls = sum(int(s.get("n", 1)) for s in species_list) if species_list else 0
@@ -1295,7 +1376,7 @@ def render_cartoon_cave_bats(species_list, asset_dir, cfg=None):
     sb = draw.textbbox((0, 0), sub_text, font=f_sub)
     draw.text((hx + (head_w - (sb[2]-sb[0]))//2, hy + 58), sub_text, font=f_sub, fill=(220, 190, 150))
     
-    N = min(len(species_list), 8) if species_list else 0
+    N = min(len(species_list), 16) if species_list else 0
     if N == 0:
         empty_font = _load_font([font_cartoon], 30)
         msg = "listening for bats in the cavern…"
@@ -1347,7 +1428,7 @@ def render_cartoon_cave_bats(species_list, asset_dir, cfg=None):
             (600, 840, 220),
             (920, 810, 215)
         ]
-    else: # 8 bats
+    elif N == 8:
         coords = [
             # Row 1 (Upper Cave Ceiling - 4 bats)
             (180, 175, 200),
@@ -1360,6 +1441,38 @@ def render_cartoon_cave_bats(species_list, asset_dir, cfg=None):
             (740, 820, 200),
             (1020, 870, 205)
         ]
+    else:
+        # 3-Tier Cavern Layout for 9 to 16 bats
+        row_splits = {
+            9: (3, 3, 3),
+            10: (4, 3, 3),
+            11: (4, 4, 3),
+            12: (4, 4, 4),
+            13: (5, 4, 4),
+            14: (5, 5, 4),
+            15: (5, 5, 5),
+            16: (6, 5, 5),
+        }
+        r_counts = row_splits.get(N, (6, 5, 5))
+        base_ys = [152, 608, 1064]
+        coords = []
+        for r_idx, k in enumerate(r_counts):
+            by_row = base_ys[r_idx]
+            if k == 3:
+                xs = [240, 600, 960]
+                tw_k = 175
+            elif k == 4:
+                xs = [175, 458, 742, 1025]
+                tw_k = 165
+            elif k == 5:
+                xs = [132, 366, 600, 834, 1068]
+                tw_k = 148
+            else: # 6
+                xs = [110, 306, 502, 698, 894, 1090]
+                tw_k = 132
+            for c_idx, cx_val in enumerate(xs):
+                stagger = 18 if (c_idx % 2 == 1) else 0
+                coords.append((cx_val, by_row + stagger, tw_k))
         
     for i in range(N):
         sp = species_list[i]
@@ -1381,50 +1494,78 @@ def render_cartoon_cave_bats(species_list, asset_dir, cfg=None):
             
         bat_img = Image.open(fn).convert("RGBA")
         cx, top_y, tw = coords[i]
-        scale = tw / float(bat_img.width)
-        th = int(bat_img.height * scale)
-        bat_scaled = bat_img.resize((tw, th), Image.Resampling.LANCZOS)
+        if N >= 9:
+            max_th = 280
+            scale = min(tw / float(bat_img.width), max_th / float(bat_img.height))
+            tw_scaled = int(bat_img.width * scale)
+            th = int(bat_img.height * scale)
+            bat_scaled = bat_img.resize((tw_scaled, th), Image.Resampling.LANCZOS)
+            bx = cx - tw_scaled // 2
+            by = top_y + 26
+        else:
+            max_th = 460 if N >= 6 else 720
+            scale = min(tw / float(bat_img.width), max_th / float(bat_img.height))
+            tw_scaled = int(bat_img.width * scale)
+            th = int(bat_img.height * scale)
+            bat_scaled = bat_img.resize((tw_scaled, th), Image.Resampling.LANCZOS)
+            bx = cx - tw_scaled // 2
+            by = top_y + 40
         
-        bx = cx - tw // 2
-        by = top_y + 40
-        
-        # If in row 2 (top_y > 500), draw stalactite rock anchor above
-        if top_y > 500:
+        # If in row 2 or row 3 (top_y > 450), draw stalactite rock anchor above
+        if top_y > 450:
+            stal_top = top_y - (42 if N >= 9 else 60)
+            stal_bot = top_y - (10 if N >= 9 else 15)
+            stal_hw = 40 if N >= 9 else 50
             draw.polygon([
-                (cx - 50, top_y - 60), (cx + 50, top_y - 60),
-                (cx + 20, top_y - 15), (cx - 20, top_y - 15)
+                (cx - stal_hw, stal_top), (cx + stal_hw, stal_top),
+                (cx + 16, stal_bot), (cx - 16, stal_bot)
             ], fill=(30, 26, 36, 240), outline=(55, 45, 60, 255))
-            draw.line([(cx - 45, top_y - 58), (cx - 18, top_y - 18)], fill=(65, 55, 75, 180), width=2)
+            draw.line([(cx - stal_hw + 5, stal_top + 2), (cx - 14, stal_bot - 3)], fill=(65, 55, 75, 180), width=2)
             
-        foot_lx = cx - int(tw * 0.12)
-        foot_rx = cx + int(tw * 0.12)
+        foot_lx = cx - int(tw_scaled * 0.12)
+        foot_rx = cx + int(tw_scaled * 0.12)
         anchor_x = cx
-        anchor_y = top_y - 20
-        draw.line([(anchor_x - 10, anchor_y), (foot_lx, by + 15)], fill=(60, 45, 35), width=3)
-        draw.line([(anchor_x + 10, anchor_y), (foot_rx, by + 15)], fill=(60, 45, 35), width=3)
+        anchor_y = top_y - (12 if N >= 9 else 20)
+        draw.line([(anchor_x - 10, anchor_y), (foot_lx, by + 12)], fill=(60, 45, 35), width=3)
+        draw.line([(anchor_x + 10, anchor_y), (foot_rx, by + 12)], fill=(60, 45, 35), width=3)
         
         canvas.alpha_composite(bat_scaled, (bx, by))
         
-        pl_w = min(220, max(195, tw + 5)) if N >= 5 else min(280, max(210, tw + 20))
-        pl_h = 58 if N >= 5 else 60
+        if N >= 9:
+            pl_w = 180 if tw <= 135 else (190 if tw <= 150 else 210)
+            pl_h = 48
+            pl_y = by + th + 8
+        else:
+            pl_w = min(220, max(195, tw + 5)) if N >= 5 else min(280, max(210, tw + 20))
+            pl_h = 58 if N >= 5 else 60
+            pl_y = by + th + 12
         pl_x = cx - pl_w // 2
-        pl_y = by + th + 12
         
-        draw.line([(cx - int(tw * 0.25), by + th - 10), (pl_x + 20, pl_y)], fill=(80, 60, 40), width=2)
-        draw.line([(cx + int(tw * 0.25), by + th - 10), (pl_x + pl_w - 20, pl_y)], fill=(80, 60, 40), width=2)
+        draw.line([(cx - int(tw_scaled * 0.25), by + th - 8), (pl_x + 18, pl_y)], fill=(80, 60, 40), width=2)
+        draw.line([(cx + int(tw_scaled * 0.25), by + th - 8), (pl_x + pl_w - 18, pl_y)], fill=(80, 60, 40), width=2)
         
         draw.rounded_rectangle([pl_x, pl_y, pl_x + pl_w, pl_y + pl_h], radius=10, fill=(250, 242, 225, 245), outline=(70, 50, 35), width=2)
-        f_name = _load_font([font_cartoon], 14 if len(sp["com"]) > 18 else 16) if N >= 5 else _load_font([font_cartoon], 15 if len(sp["com"]) > 18 else 17)
-        f_cnt = _load_font([font_cartoon], 12 if N >= 5 else 13)
-        
         c_com = sp["com"]
+        if N >= 9:
+            f_name = _load_font([font_cartoon], 11 if len(c_com) > 20 else (12 if len(c_com) > 16 else 14))
+            f_cnt = _load_font([font_cartoon], 11)
+            name_y_off, cnt_y_off = 5, 26
+        elif N >= 5:
+            f_name = _load_font([font_cartoon], 14 if len(c_com) > 18 else 16)
+            f_cnt = _load_font([font_cartoon], 12)
+            name_y_off, cnt_y_off = 6, 30
+        else:
+            f_name = _load_font([font_cartoon], 15 if len(c_com) > 18 else 17)
+            f_cnt = _load_font([font_cartoon], 13)
+            name_y_off, cnt_y_off = 8, 32
+            
         cb = draw.textbbox((0, 0), c_com, font=f_name)
-        draw.text((pl_x + (pl_w - (cb[2]-cb[0]))//2, pl_y + (6 if N >= 5 else 8)), c_com, font=f_name, fill=(40, 25, 15))
+        draw.text((pl_x + (pl_w - (cb[2]-cb[0]))//2, pl_y + name_y_off), c_com, font=f_name, fill=(40, 25, 15))
         
         calls = int(sp.get("n", 1))
         cnt_str = f"{calls:,} Calls Tonight" if calls != 1 else "1 Call Tonight"
         cnb = draw.textbbox((0, 0), cnt_str, font=f_cnt)
-        draw.text((pl_x + (pl_w - (cnb[2]-cnb[0]))//2, pl_y + (30 if N >= 5 else 32)), cnt_str, font=f_cnt, fill=(110, 75, 40))
+        draw.text((pl_x + (pl_w - (cnb[2]-cnb[0]))//2, pl_y + cnt_y_off), cnt_str, font=f_cnt, fill=(110, 75, 40))
         
     site_label = cfg.get("active_node", "Battybird").split("(")[0].strip() if cfg else "Battybird"
     total_calls = sum(int(s.get("n", 1)) for s in species_list) if species_list else 0
@@ -1473,7 +1614,7 @@ def render_vintage_audubon_bats(species_list, asset_dir, cfg=None):
     sb = draw.textbbox((0, 0), sub, font=f_sub)
     draw.text((hx + (head_w - (sb[2]-sb[0]))//2, hy + 72), sub, font=f_sub, fill=(100, 80, 60))
     
-    N = min(len(species_list), 8) if species_list else 0
+    N = min(len(species_list), 16) if species_list else 0
     if N == 0:
         empty_font = _load_font(FONTS_ITALIC, 28)
         msg = "listening for nocturnal visitors…"
@@ -1532,7 +1673,7 @@ def render_vintage_audubon_bats(species_list, asset_dir, cfg=None):
             (610, 840, 260, 640),
             (900, 840, 260, 640)
         ]
-    else: # 8 bats
+    elif N == 8:
         grid_cells = [
             # Top Row - 4 plates
             (30, 170, 260, 640),
@@ -1545,6 +1686,46 @@ def render_vintage_audubon_bats(species_list, asset_dir, cfg=None):
             (610, 840, 260, 640),
             (900, 840, 260, 640)
         ]
+    elif N <= 12:
+        # 3-row Audubon grid for 9 to 12 plates
+        row_splits = {
+            9: (3, 3, 3),
+            10: (4, 3, 3),
+            11: (4, 4, 3),
+            12: (4, 4, 4),
+        }
+        r_counts = row_splits.get(N, (4, 4, 4))
+        row_ys = [165, 610, 1055]
+        gh_val = 425
+        grid_cells = []
+        for r_idx, k in enumerate(r_counts):
+            gy_val = row_ys[r_idx]
+            if k == 3:
+                for gx_val in [50, 425, 800]:
+                    grid_cells.append((gx_val, gy_val, 350, gh_val))
+            else:
+                for gx_val in [30, 320, 610, 900]:
+                    grid_cells.append((gx_val, gy_val, 260, gh_val))
+    else:
+        # 4-row Audubon grid for 13 to 16 plates
+        row_splits = {
+            13: (4, 3, 3, 3),
+            14: (4, 4, 3, 3),
+            15: (4, 4, 4, 3),
+            16: (4, 4, 4, 4),
+        }
+        r_counts = row_splits.get(N, (4, 4, 4, 4))
+        row_ys = [162, 498, 834, 1170]
+        gh_val = 320
+        grid_cells = []
+        for r_idx, k in enumerate(r_counts):
+            gy_val = row_ys[r_idx]
+            if k == 3:
+                for gx_val in [50, 425, 800]:
+                    grid_cells.append((gx_val, gy_val, 350, gh_val))
+            else:
+                for gx_val in [30, 320, 610, 900]:
+                    grid_cells.append((gx_val, gy_val, 260, gh_val))
         
     for i in range(N):
         sp = species_list[i]
@@ -1568,21 +1749,36 @@ def render_vintage_audubon_bats(species_list, asset_dir, cfg=None):
         draw.rectangle([gx, gy, gx + gw, gy + gh], outline=(200, 185, 165), width=1)
         
         plate_img = Image.open(plate_fn).convert("RGB")
-        avail_img_h = gh - 85
+        label_h = 68 if gh < 400 else (76 if gh < 500 else 85)
+        avail_img_h = gh - label_h
         scale = min(gw / plate_img.width, avail_img_h / plate_img.height) * 0.96
         pw = int(plate_img.width * scale)
         ph = int(plate_img.height * scale)
         plate_scaled = plate_img.resize((pw, ph), Image.Resampling.LANCZOS)
         
         px = gx + (gw - pw) // 2
-        py = gy + (avail_img_h - ph) // 2 + 5
+        py = gy + (avail_img_h - ph) // 2 + 4
         canvas.paste(plate_scaled, (px, py))
         
         cn = sp["com"]
         sn = sp["sci"]
         calls = int(sp.get("n", 1))
         
-        if gw < 300:
+        if gh < 400:
+            f_cname = _load_font(FONTS_BOLD, 12 if len(cn) > 18 else 13)
+            f_sname = _load_font(FONTS_ITALIC, 11)
+            f_count = _load_font(FONTS_BOLD, 10)
+            y_cname = gy + gh - 52
+            y_sname = gy + gh - 35
+            y_count = gy + gh - 19
+        elif gh < 500:
+            f_cname = _load_font(FONTS_BOLD, 13 if len(cn) > 18 else 14)
+            f_sname = _load_font(FONTS_ITALIC, 11)
+            f_count = _load_font(FONTS_BOLD, 10)
+            y_cname = gy + gh - 58
+            y_sname = gy + gh - 40
+            y_count = gy + gh - 21
+        elif gw < 300:
             f_cname = _load_font(FONTS_BOLD, 13 if len(cn) > 18 else 14)
             f_sname = _load_font(FONTS_ITALIC, 11)
             f_count = _load_font(FONTS_BOLD, 10)
@@ -1627,7 +1823,9 @@ def render_vintage_audubon_bats(species_list, asset_dir, cfg=None):
     f_ft = _load_font(FONTS_ITALIC, 15)
     fb = draw.textbbox((0, 0), foot_text, font=f_ft)
     fw = fb[2] - fb[0]
-    draw.text(((PANEL_W - fw)//2, PANEL_H - 42), foot_text, font=f_ft, fill=(120, 100, 80))
+    fx0 = (PANEL_W - fw) // 2
+    draw.rectangle([fx0 - 16, PANEL_H - 46, fx0 + fw + 16, PANEL_H - 18], fill=bg_color, outline=(160, 140, 120), width=1)
+    draw.text((fx0, PANEL_H - 42), foot_text, font=f_ft, fill=(100, 80, 60))
     
     return canvas
 
