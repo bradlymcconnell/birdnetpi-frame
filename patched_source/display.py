@@ -1918,7 +1918,7 @@ def load_config(path):
             try:
                 with open(ha_token_path, "r") as tf:
                     tok = tf.read().strip()
-                req = urllib.request.Request("http://192.168.1.81:8123/api/states/sun.sun", headers={"Authorization": f"Bearer {tok}"})
+                req = urllib.request.Request("http://192.168.1.82:8123/api/states/sun.sun", headers={"Authorization": f"Bearer {tok}"})
                 with urllib.request.urlopen(req, timeout=2.0) as resp:
                     sun_data = json.loads(resp.read().decode())
                     sun_state = sun_data.get("state")

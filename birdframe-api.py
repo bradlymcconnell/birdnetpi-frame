@@ -25,7 +25,7 @@ CONFIG_PATH = os.path.expanduser("~/.birdframe/config.toml")
 TOKEN_PATH = os.path.expanduser("~/.birdframe/ha_token")
 FRAME_DIR = "/home/birder/AvianVisitors/frame"
 VENV_PYTHON = "/home/birder/AvianVisitors/frame/.venv/bin/python3"
-HA_BASE_URL = "http://192.168.1.81:8123"
+HA_BASE_URL = "http://192.168.1.82:8123"
 
 DEFAULT_TOKEN = os.environ.get("HA_TOKEN", "")
 
@@ -354,8 +354,18 @@ def set_art_style(style_input, notify_ha_self=True):
         return set_bat_style(full_prefixed, notify_ha_self=True, refresh_if_active=True)
 
 
+def normalize_node_mode(mode_str):
+    m = (mode_str or "").lower().strip()
+    if "bat" in m:
+        return "battybird (Bats)"
+    elif "bird" in m:
+        return "birdnetpi1 (Birds)"
+    return "Automatic (Day/Night)"
+
+
 def update_node(mode_str, notify_ha=True):
     global LAST_NODE_SELECT, CURRENT_EFFECTIVE_NODE, LAST_ART_STYLE_SELECT, IGNORE_HA_NODE_UNTIL, IGNORE_HA_ART_UNTIL
+    mode_str = normalize_node_mode(mode_str)
     eff_node = resolve_node(mode_str)
     node_cfg = NODES[eff_node]
 

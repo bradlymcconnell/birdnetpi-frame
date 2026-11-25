@@ -18,7 +18,7 @@ CONFIG_PATH = os.path.expanduser("~/.birdframe/config.toml")
 TOKEN_PATH = os.path.expanduser("~/.birdframe/ha_token")
 FRAME_DIR = "/home/birder/AvianVisitors/frame"
 VENV_PYTHON = "/home/birder/AvianVisitors/frame/.venv/bin/python3"
-HA_BASE_URL = "http://192.168.1.81:8123"
+HA_BASE_URL = "http://192.168.1.82:8123"
 
 # Fallback default token (prefer storing in ~/.birdframe/ha_token or setting HA_TOKEN env var)
 DEFAULT_TOKEN = os.environ.get("HA_TOKEN", "")
